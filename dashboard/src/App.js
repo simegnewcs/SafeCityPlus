@@ -1,24 +1,35 @@
-import logo from './logo.svg';
-import './App.css';
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import Login from './auth/Login';
+import Register from './auth/Register';
+import AdminDashboard from './pages/AdminDashboard';
+import ResponderDashboard from './pages/ResponderDashboard';
 
 function App() {
+  const user = JSON.parse(localStorage.getItem('user'));
+
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
+    <Router>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+
+        {/* Admin Route */}
+        <Route 
+          path="/admin-dashboard" 
+          element={user?.role === 'Admin' ? <AdminDashboard /> : <Navigate to="/login" />} 
+        />
+
+        {/* Responder Route */}
+        <Route 
+          path="/responder-dashboard" 
+          element={user?.role === 'Responder' ? <ResponderDashboard /> : <Navigate to="/login" />} 
+        />
+
+        {/* Default Route */}
+        <Route path="/" element={<Navigate to="/login" />} />
+      </Routes>
+    </Router>
   );
 }
 

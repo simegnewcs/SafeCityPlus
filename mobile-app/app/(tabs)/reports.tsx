@@ -1,104 +1,136 @@
-import React from 'react';
-import { View, Text, FlatList, Image, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { 
+  View, Text, FlatList, Image, StyleSheet, 
+  ActivityIndicator, RefreshControl, TouchableOpacity 
+} from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { ShieldAlert, Calendar, MapPin, ChevronRight } from 'lucide-react-native';
 
-const aiMockCCTV = [
-  {
-    id: '1',
-    title: 'Bole Road - Major Car Accident',
-    time: '3 min ago',
-    location: 'Bole, Addis Ababa',
-    type: 'Car Accident',
-    confidence: '94%',
-    severity: 'High',
-  },
-  {
-    id: '2',
-    title: 'Piassa Market - Fire Detected',
-    time: '8 min ago',
-    location: 'Piassa, Addis Ababa',
-    type: 'Fire',
-    confidence: '91%',
-    severity: 'High',
-  },
-  {
-    id: '3',
-    title: 'Merkato - Medical Emergency',
-    time: '14 min ago',
-    location: 'Merkato, Addis Ababa',
-    type: 'Medical Emergency',
-    confidence: '85%',
-    severity: 'Medium',
-  },
-  {
-    id: '4',
-    title: 'Mexico Square - Flooding',
-    time: '27 min ago',
-    location: 'Mexico Square, Addis Ababa',
-    type: 'Flooding',
-    confidence: '78%',
-    severity: 'Low',
-  },
-  {
-    id: '5',
-    title: 'Arat Kilo - Traffic Collision',
-    time: '41 min ago',
-    location: 'Arat Kilo, Addis Ababa',
-    type: 'Traffic Collision',
-    confidence: '88%',
-    severity: 'High',
-  },
-];
+const API_URL = 'http://192.168.137.1:5000'; // የአንተን IP አድራሻ ተጠቀም
 
-export default function CCTVScreen() {
+export default function ReportsScreen() {
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    fetchReports();
+  }, []);
+
+  const fetchReports = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/incidents`);
+      const data = await response.json();
+      setReports(data);
+    } catch (error) {
+      console.error('Error fetching reports:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchReports();
+    setRefreshing(false);
+  };
+
+  const renderItem = ({ item }: any) => (
+    <TouchableOpacity style={styles.card} activeOpacity={0.9}>
+      <Image 
+        source={{ uri: `${API_URL}/uploads/${item.image_name}` }} 
+        style={styles.image}
+        onError={(e) => console.log('Image Load Error')}
+      />
+      <View style={styles.content}>
+        <View style={styles.headerRow}>
+          <Text style={styles.type}>{item.type}</Text>
+          <View style={[styles.priorityBadge, { backgroundColor: item.priority === 'High' ? '#fee2e2' : '#fef3c7' }]}>
+            <Text style={[styles.priorityText, { color: item.priority === 'High' ? '#ef4444' : '#f59e0b' }]}>
+              {item.priority}
+            </Text>
+          </View>
+        </View>
+
+        <Text style={styles.description} numberOfLines={2}>
+          {item.description || "No description provided."}
+        </Text>
+
+        <View style={styles.footer}>
+          <View style={styles.footerItem}>
+            <Calendar size={12} color="#64748b" />
+            <Text style={styles.footerText}>{new Date(item.timestamp).toLocaleDateString()}</Text>
+          </View>
+          <View style={styles.footerItem}>
+            <MapPin size={12} color="#64748b" />
+            <Text style={styles.footerText}>Addis Ababa</Text>
+          </View>
+        </View>
+      </View>
+      <ChevronRight size={20} color="#cbd5e1" style={{ marginRight: 10 }} />
+    </TouchableOpacity>
+  );
+
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>Live CCTV Feed • AI Detection</Text>
-      <Text style={styles.subHeader}>Real-time incidents from city cameras</Text>
+      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.topHeader}>
+        <Text style={styles.title}>Incident Logs</Text>
+        <Text style={styles.subtitle}>{reports.length} Reports Found</Text>
+      </LinearGradient>
 
-      <FlatList
-        data={aiMockCCTV}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <View style={styles.card}>
-            <Image source={{ uri: 'https://picsum.photos/id/' + (20 + parseInt(item.id)) + '/400/220' }} style={styles.image} />
-            
-            <View style={styles.info}>
-              <Text style={styles.title}>{item.title}</Text>
-              <Text style={styles.location}>{item.location}</Text>
-              
-              <View style={styles.aiRow}>
-                <Text style={styles.aiText}>AI: {item.type}</Text>
-                <Text style={styles.confidence}>Confidence {item.confidence}</Text>
-              </View>
-              
-              <Text style={[styles.severity, item.severity === 'High' ? styles.red : item.severity === 'Medium' ? styles.orange : styles.green]}>
-                {item.severity} Priority
-              </Text>
-              
-              <Text style={styles.time}>{item.time}</Text>
+      {loading ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color="#3b82f6" />
+        </View>
+      ) : (
+        <FlatList
+          data={reports}
+          keyExtractor={(item) => item.id.toString()}
+          renderItem={renderItem}
+          contentContainerStyle={styles.list}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#3b82f6" />
+          }
+          ListEmptyComponent={
+            <View style={styles.center}>
+              <ShieldAlert size={50} color="#334155" />
+              <Text style={styles.emptyText}>No reports yet.</Text>
             </View>
-          </View>
-        )}
-      />
+          }
+        />
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0A2540', padding: 15 },
-  header: { fontSize: 26, fontWeight: 'bold', color: '#fff' },
-  subHeader: { color: '#94a3b8', marginBottom: 20 },
-  card: { backgroundColor: '#1E3A5F', borderRadius: 16, overflow: 'hidden', marginBottom: 18 },
-  image: { width: '100%', height: 200 },
-  info: { padding: 16 },
-  title: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
-  location: { color: '#ccc', marginBottom: 10 },
-  aiRow: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 8 },
-  aiText: { color: '#ffcc00', fontSize: 16 },
-  confidence: { color: '#fff', fontWeight: '600' },
-  severity: { fontSize: 14, fontWeight: 'bold', padding: 6, borderRadius: 8, textAlign: 'center', marginBottom: 8 },
-  red: { backgroundColor: '#E63939', color: '#fff' },
-  orange: { backgroundColor: '#FB923C', color: '#fff' },
-  green: { backgroundColor: '#4ADE80', color: '#000' },
-  time: { color: '#94a3b8', fontSize: 12, textAlign: 'right' },
+  container: { flex: 1, backgroundColor: '#f8fafc' },
+  topHeader: { padding: 30, paddingTop: 60, borderBottomLeftRadius: 30, borderBottomRightRadius: 30 },
+  title: { color: '#fff', fontSize: 24, fontWeight: '900' },
+  subtitle: { color: '#94a3b8', fontSize: 13, marginTop: 5, fontWeight: 'bold' },
+  list: { padding: 15, paddingBottom: 100 },
+  card: { 
+    flexDirection: 'row', 
+    backgroundColor: '#fff', 
+    borderRadius: 20, 
+    marginBottom: 15, 
+    alignItems: 'center',
+    padding: 10,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 10
+  },
+  image: { width: 70, height: 70, borderRadius: 15, backgroundColor: '#f1f5f9' },
+  content: { flex: 1, marginLeft: 15, justifyContent: 'center' },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
+  type: { fontSize: 16, fontWeight: 'bold', color: '#1e293b', textTransform: 'capitalize' },
+  priorityBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+  priorityText: { fontSize: 10, fontWeight: '900' },
+  description: { fontSize: 12, color: '#64748b', marginBottom: 8 },
+  footer: { flexDirection: 'row', gap: 15 },
+  footerItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  footerText: { fontSize: 10, color: '#94a3b8', fontWeight: 'bold' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', marginTop: 100 },
+  emptyText: { color: '#64748b', marginTop: 10, fontWeight: 'bold' }
 });
