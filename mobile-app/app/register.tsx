@@ -6,8 +6,9 @@ import {
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { User, Phone, Lock, ArrowRight } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_URL = 'http://192.168.137.1:5000'; // ያንተ IP አድራሻ
+const API_URL = 'http://192.168.137.1:5000';
 
 // InputBox Component
 const InputBox = ({ icon, placeholder, secure, keyboardType, onChange }: any) => (
@@ -38,21 +39,51 @@ export default function RegisterScreen() {
 
     setLoading(true);
     try {
+      // 1. Register the user
       const response = await fetch(`${API_URL}/api/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
       });
 
-      // መጀመሪያ ምላሹን እንደ ጽሁፍ እናነባለን (ለዲበግ እንዲረዳን)
       const textResponse = await response.text();
       console.log("Server Raw Response:", textResponse);
-
       const data = JSON.parse(textResponse);
 
       if (data.success) {
-        Alert.alert("ስኬት", "አካውንት ተፈጥሯል! አሁን መግባት ይችላሉ።");
-        router.replace('/login');
+        // 2. Auto-login after successful registration
+        console.log("✅ Registration successful, auto-logging in...");
+        
+        const loginResponse = await fetch(`${API_URL}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            phone: formData.phone, 
+            password: formData.password 
+          }),
+        });
+
+        const loginData = await loginResponse.json();
+        console.log("Login response:", loginData);
+
+        if (loginData.success && loginData.user) {
+          // 3. Store user data for persistent session
+          await AsyncStorage.setItem('userData', JSON.stringify(loginData.user));
+          await AsyncStorage.setItem('userToken', loginData.user.id.toString());
+          await AsyncStorage.setItem('isLoggedIn', 'true');
+          
+          console.log("✅ User data saved, redirecting to main app");
+          
+          // 4. Navigate to main app
+          router.replace('/(tabs)');
+        } else {
+          // If auto-login fails, redirect to login screen
+          Alert.alert(
+            "ስኬት", 
+            "አካውንት ተፈጥሯል! እባክዎ ይግቡ",
+            [{ text: "OK", onPress: () => router.replace('/login') }]
+          );
+        }
       } else {
         Alert.alert("ስህተት", data.message || "ምዝገባው አልተሳካም");
       }

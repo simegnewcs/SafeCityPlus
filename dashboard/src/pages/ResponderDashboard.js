@@ -1,50 +1,154 @@
-import React, { useState } from 'react';
-import { useSocket } from '../hooks/useSocket';
-import Sidebar from '../layout/Sidebar';
-import MapView from '../components/MapView';
-import IncidentCard from '../components/IncidentCard';
+// src/pages/ResponderDashboard.js
+import React, { useEffect, useState, useMemo } from "react";
+import ResponderSidebar from "../layout/ResponderSidebar";
+import MapView from "../components/MapView";
+import IncidentTable from "../components/IncidentTable";
+import axios from "axios";
+import { Shield, MapPin, Clock, CheckCircle, AlertTriangle } from "lucide-react";
 
 const ResponderDashboard = () => {
-    const [activeTab, setActiveTab] = useState('dashboard');
-    const incidents = useSocket();
-    const user = JSON.parse(localStorage.getItem('user'));
+  const user = JSON.parse(localStorage.getItem("user") || "{}");
+  const [incidents, setIncidents] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-    // ሪስፖንደሩ ማየት ያለበት ያልተፈቱ (Pending) አደጋዎችን ብቻ ነው
-    const pendingIncidents = incidents.filter(inc => inc.status !== 'Resolved');
+  useEffect(() => {
+    const fetchIncidents = async () => {
+      try {
+        const res = await axios.get(`http://localhost:5000/api/incidents/assigned/${user.id}`);
+        setIncidents(res.data);
+      } catch (err) {
+        console.error("Error fetching assigned incidents:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchIncidents();
+  }, [user.id]);
 
-    return (
-        <div className="flex bg-slate-50 min-h-screen">
-            <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} user={user} />
-            <main className="flex-1 ml-64 p-8">
-                <header className="mb-10 bg-gradient-to-r from-red-600 to-orange-600 p-8 rounded-[2rem] shadow-xl text-white">
-                    <h1 className="text-3xl font-black">RESPONDER PORTAL</h1>
-                    <p className="text-red-100 text-xs font-bold tracking-[0.3em]">Active Emergencies | Field Unit: {user?.fullName}</p>
-                </header>
+  const stats = useMemo(() => {
+    const total = incidents.length;
+    const inProgress = incidents.filter((i) => i.status === "In Progress").length;
+    const resolved = incidents.filter((i) => i.status === "Resolved").length;
+    const pending = incidents.filter((i) => i.status === "Pending" || !i.status).length;
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <div className="bg-white p-2 rounded-3xl shadow-lg h-[450px]">
-                        <h3 className="p-4 font-bold text-slate-700">Nearby Incidents</h3>
-                        <MapView incidents={pendingIncidents} />
-                    </div>
+    return { total, inProgress, resolved, pending };
+  }, [incidents]);
 
-                    <div className="space-y-4">
-                        <h3 className="font-bold text-slate-800 text-xl">Urgent Tasks</h3>
-                        <div className="grid grid-cols-1 gap-4 overflow-y-auto max-h-[500px] pr-2">
-                            {pendingIncidents.length > 0 ? (
-                                pendingIncidents.map(inc => (
-                                    <IncidentCard key={inc.id} incident={inc} isResponder={true} />
-                                ))
-                            ) : (
-                                <div className="bg-green-100 p-10 rounded-3xl text-center">
-                                    <p className="text-green-700 font-bold">All Clear! No pending emergencies.</p>
-                                </div>
-                            )}
-                        </div>
-                    </div>
+  return (
+    <div className="flex h-screen bg-zinc-50 text-zinc-900 overflow-hidden">
+      <ResponderSidebar 
+        activeTab="dashboard" 
+        setActiveTab={() => {}} 
+        user={user} 
+      />
+
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top Navbar - Blue Theme */}
+        <header className="h-16 bg-white border-b border-zinc-200 px-6 flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-4">
+            <Shield className="w-7 h-7 text-blue-600" />
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight">Responder Dashboard</h1>
+              <p className="text-sm text-zinc-500">Field Operations • Real-time</p>
+            </div>
+          </div>
+
+          <div className="text-sm text-zinc-500 font-medium">
+            Welcome back, <span className="text-blue-600">{user?.fullName || user?.full_name}</span>
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <main className="flex-1 p-6 md:p-8 overflow-auto bg-zinc-50">
+          {/* Stats Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+            <StatCard 
+              title="Total Assigned" 
+              value={stats.total} 
+              icon={<MapPin size={28} />} 
+              color="blue" 
+            />
+            <StatCard 
+              title="In Progress" 
+              value={stats.inProgress} 
+              icon={<Clock size={28} />} 
+              color="amber" 
+            />
+            <StatCard 
+              title="Resolved" 
+              value={stats.resolved} 
+              icon={<CheckCircle size={28} />} 
+              color="emerald" 
+            />
+            <StatCard 
+              title="Pending" 
+              value={stats.pending} 
+              icon={<AlertTriangle size={28} />} 
+              color="rose" 
+            />
+          </div>
+
+          {/* Live Map Section */}
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold flex items-center gap-2">
+                My Assigned Incidents Map
+                <span className="text-xs px-3 py-1 bg-blue-100 text-blue-700 rounded-full font-medium">LIVE</span>
+              </h2>
+              <p className="text-sm text-zinc-500">Click markers for details</p>
+            </div>
+            <div className="bg-white border border-zinc-200 rounded-3xl shadow-sm overflow-hidden h-[420px] md:h-[480px]">
+              <MapView incidents={incidents} />
+            </div>
+          </div>
+
+          {/* Recent Incidents Table */}
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold">My Recent Incidents</h2>
+              {incidents.length > 0 && (
+                <p className="text-sm text-zinc-500">
+                  {incidents.length} assigned incident{incidents.length > 1 ? 's' : ''}
+                </p>
+              )}
+            </div>
+            
+            <div className="bg-white border border-zinc-200 rounded-3xl shadow-sm overflow-hidden">
+              {loading ? (
+                <div className="py-20 text-center">
+                  <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
+                  <p className="text-zinc-500">Loading your incidents...</p>
                 </div>
-            </main>
-        </div>
-    );
+              ) : (
+                <IncidentTable data={incidents} isAdmin={false} />
+              )}
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+};
+
+const StatCard = ({ title, value, icon, color = "blue" }) => {
+  const colorMap = {
+    blue: "border-blue-200 text-blue-600",
+    emerald: "border-emerald-200 text-emerald-600",
+    amber: "border-amber-200 text-amber-600",
+    rose: "border-rose-200 text-rose-600",
+  };
+
+  return (
+    <div className={`bg-white border ${colorMap[color]} p-6 rounded-3xl shadow-sm hover:shadow transition-all hover:-translate-y-0.5`}>
+      <div className="flex items-start justify-between mb-4">
+        <div className="text-4xl opacity-90">{icon}</div>
+      </div>
+      <p className="text-zinc-500 text-sm tracking-wide mb-1">{title}</p>
+      <h3 className="text-5xl font-semibold tabular-nums tracking-tighter text-zinc-900">
+        {value}
+      </h3>
+    </div>
+  );
 };
 
 export default ResponderDashboard;

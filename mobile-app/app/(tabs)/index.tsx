@@ -2,54 +2,114 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, TouchableOpacity, StyleSheet, 
   ScrollView, Image, ActivityIndicator, RefreshControl,
-  Animated, Easing
+  Animated, Easing, Dimensions, StatusBar
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'; // 👈 የታብ ችግርን የሚፈታ
-import { ShieldAlert, Video, Map as MapIcon, Lightbulb, Bell, User } from 'lucide-react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_URL = 'http://192.168.137.1:5000'; 
+const { width, height } = Dimensions.get('window');
+const API_URL = 'http://192.168.137.1:5000';
 
 export default function HomeScreen() {
-  const [userName, setUserName] = useState('Developer');
+  const [userName, setUserName] = useState('Citizen');
+  const [userRole, setUserRole] = useState('User');
   const [recentIncidents, setRecentIncidents] = useState([]);
+  const [stats, setStats] = useState({ total: 0, active: 0, resolved: 0 });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [notifications, setNotifications] = useState(3);
   
   const router = useRouter();
-  const insets = useSafeAreaInsets(); // 👈 ለስልኩ ሜኑ ክፍተት ሰጪ
+  const insets = useSafeAreaInsets();
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const slideAnim = useRef(new Animated.Value(50)).current;
+  const statsAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    loadUserData();
     fetchIncidents();
+    fetchStats();
     
-    // Fade in effect
-    Animated.timing(fadeAnim, { 
-      toValue: 1, 
-      duration: 800, 
-      useNativeDriver: true 
-    }).start();
+    // Entrance animations
+    Animated.parallel([
+      Animated.timing(fadeAnim, { 
+        toValue: 1, 
+        duration: 800, 
+        useNativeDriver: true 
+      }),
+      Animated.timing(slideAnim, { 
+        toValue: 0, 
+        duration: 600, 
+        useNativeDriver: true 
+      })
+    ]).start();
 
-    // SOS Pulse effect
+    // SOS Pulse animation
     Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.1, duration: 1000, easing: Easing.linear, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 1000, easing: Easing.linear, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { 
+          toValue: 1.08, 
+          duration: 1000, 
+          easing: Easing.inOut(Easing.ease), 
+          useNativeDriver: true 
+        }),
+        Animated.timing(pulseAnim, { 
+          toValue: 1, 
+          duration: 1000, 
+          easing: Easing.inOut(Easing.ease), 
+          useNativeDriver: true 
+        }),
       ])
     ).start();
+
+    // Stats counter animation
+    Animated.timing(statsAnim, {
+      toValue: 1,
+      duration: 1500,
+      useNativeDriver: false,
+    }).start();
   }, []);
+
+  const loadUserData = async () => {
+    try {
+      const userData = await AsyncStorage.getItem('userData');
+      if (userData) {
+        const user = JSON.parse(userData);
+        setUserName(user.fullName?.split(' ')[0] || 'Citizen');
+        setUserRole(user.role || 'User');
+      }
+    } catch (error) {
+      console.error('Error loading user data:', error);
+    }
+  };
 
   const fetchIncidents = async () => {
     try {
       const response = await fetch(`${API_URL}/api/incidents`);
       const data = await response.json();
-      setRecentIncidents(data.slice(0, 4));
+      setRecentIncidents(data.slice(0, 5));
     } catch (error) {
       console.error('Error fetching incidents:', error);
+    }
+  };
+
+  const fetchStats = async () => {
+    try {
+      const response = await fetch(`${API_URL}/api/incidents/stats`);
+      const data = await response.json();
+      setStats({
+        total: data.total || 0,
+        active: data.byStatus?.find((s: any) => s.status === 'Pending')?.count || 0,
+        resolved: data.byStatus?.find((s: any) => s.status === 'Resolved')?.count || 0
+      });
+    } catch (error) {
+      console.error('Error fetching stats:', error);
     } finally {
       setLoading(false);
     }
@@ -57,127 +117,306 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchIncidents();
+    await Promise.all([fetchIncidents(), fetchStats()]);
     setRefreshing(false);
   };
 
+  const formatTime = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+  };
+
+  const getPriorityIcon = (priority: string) => {
+    switch (priority?.toLowerCase()) {
+      case 'critical':
+        return 'alert-circle';
+      case 'high':
+        return 'warning';
+      case 'medium':
+        return 'time';
+      default:
+        return 'information-circle';
+    }
+  };
+
+  const getPriorityColor = (priority: string) => {
+    switch (priority?.toLowerCase()) {
+      case 'critical':
+        return '#dc2626';
+      case 'high':
+        return '#ef4444';
+      case 'medium':
+        return '#f59e0b';
+      default:
+        return '#10b981';
+    }
+  };
+
+  const StatCard = ({ icon, value, label, color }: any) => (
+    <Animated.View 
+      style={[
+        styles.statCard,
+        {
+          opacity: statsAnim,
+          transform: [{
+            scale: statsAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.8, 1]
+            })
+          }]
+        }
+      ]}
+    >
+      <LinearGradient colors={[`${color}20`, `${color}10`]} style={styles.statGradient}>
+        <Ionicons name={icon} size={24} color={color} />
+        <Text style={[styles.statValue, { color }]}>{value}</Text>
+        <Text style={styles.statLabel}>{label}</Text>
+      </LinearGradient>
+    </Animated.View>
+  );
+
+  const QuickAction = ({ icon, title, color, route }: any) => (
+    <TouchableOpacity 
+      style={styles.actionCard} 
+      onPress={() => router.push(route)}
+      activeOpacity={0.7}
+    >
+      <LinearGradient colors={[`${color}20`, `${color}05`]} style={styles.actionGradient}>
+        <View style={[styles.actionIcon, { backgroundColor: color }]}>
+          <Ionicons name={icon} size={22} color="#fff" />
+        </View>
+        <Text style={styles.actionTitle}>{title}</Text>
+      </LinearGradient>
+    </TouchableOpacity>
+  );
+
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      <LinearGradient colors={['#1faba9', '#225ab5']} style={styles.gradient}>
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#0f172a" />
+      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.gradient}>
         <ScrollView 
+          showsVerticalScrollIndicator={false}
           contentContainerStyle={[
-            styles.scroll, 
-            { paddingBottom: insets.bottom + 100 } // 👈 የታችኛው ታብ እንዳይሸፈን ክፍተት ይጨምራል
+            styles.scrollContent,
+            { paddingBottom: insets.bottom + 80 }
           ]}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#E63939" />
+          }
         >
           {/* Header */}
-          <View style={styles.header}>
+          <Animated.View style={[styles.header, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
             <View>
               <Text style={styles.greeting}>Welcome back,</Text>
-              <Text style={styles.userName}>{userName} 👋</Text>
+              <Text style={styles.userName}>{userName} <Text style={styles.roleBadge}>{userRole}</Text></Text>
             </View>
-            <TouchableOpacity style={styles.notifBtn}>
-              <Bell color="#fff" size={26} />
-              <View style={styles.notificationDot} />
+            <TouchableOpacity 
+              style={styles.notifBtn} 
+              onPress={() => router.push('/notifications')}
+            >
+              <Ionicons name="notifications-outline" size={26} color="#fff" />
+              {notifications > 0 && (
+                <View style={styles.notificationDot}>
+                  <Text style={styles.notificationCount}>{notifications}</Text>
+                </View>
+              )}
             </TouchableOpacity>
+          </Animated.View>
+
+          {/* Stats Section */}
+          <View style={styles.statsContainer}>
+            <StatCard icon="stats-chart" value={stats.total} label="Total Reports" color="#3b82f6" />
+            <StatCard icon="time" value={stats.active} label="Active" color="#f59e0b" />
+            <StatCard icon="checkmark-circle" value={stats.resolved} label="Resolved" color="#10b981" />
           </View>
 
-          {/* SOS Section with Pulse Animation */}
-          <View style={styles.sosContainer}>
-            <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-               <TouchableOpacity 
-                style={styles.sosButton} 
-                onPress={() => router.push('/camera')} 
-                activeOpacity={0.8}
+          {/* SOS Emergency Button */}
+          <Animated.View style={[styles.sosContainer, { transform: [{ scale: pulseAnim }] }]}>
+            <TouchableOpacity 
+              style={styles.sosButton} 
+              onPress={() => router.push('/camera')} 
+              activeOpacity={0.9}
+            >
+              <LinearGradient 
+                colors={['#E63939', '#b91c1c']} 
+                style={styles.sosInner}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
               >
-                <LinearGradient colors={['#ef4444', '#b91c1c']} style={styles.sosInner}>
-                  <ShieldAlert size={50} color="#fff" />
-                  <Text style={styles.sosText}>SOS</Text>
-                  <Text style={styles.sosSub}>REPORT EMERGENCY</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </Animated.View>
-          </View>
+                <Ionicons name="alert-circle" size={60} color="#fff" />
+                <Text style={styles.sosText}>SOS</Text>
+                <Text style={styles.sosSub}>REPORT EMERGENCY</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </Animated.View>
 
           {/* Quick Actions */}
-          <Text style={styles.sectionTitle}>Quick Actions</Text>
-          <View style={styles.quickActions}>
-            <ActionBtn icon={<Video color="#fff" size={20}/>} title="CCTV" color="#3b82f6" onPress={() => router.push('/cctv')} />
-            <ActionBtn icon={<MapIcon color="#fff" size={20}/>} title="Map" color="#8b5cf6" onPress={() => router.push('/map')} />
-            <ActionBtn icon={<Lightbulb color="#fff" size={20}/>} title="Tips" color="#10b981" onPress={() => router.push('/tips')} />
-            <ActionBtn icon={<ShieldAlert color="#fff" size={20}/>} title="Logs" color="#f59e0b" onPress={() => router.push('/reports')} />
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Quick Actions</Text>
+            <View style={styles.quickActions}>
+              <QuickAction icon="videocam" title="CCTV" color="#3b82f6" route="/cctv" />
+              <QuickAction icon="map" title="Live Map" color="#8b5cf6" route="/map" />
+              <QuickAction icon="bulb" title="Safety Tips" color="#10b981" route="/tips" />
+              <QuickAction icon="document-text" title="Reports" color="#f59e0b" route="/reports" />
+            </View>
           </View>
 
-          {/* Recent Incidents Section */}
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Recent Incidents</Text>
-            <TouchableOpacity onPress={() => router.push('/reports')}>
-              <Text style={{ color: '#3b82f6', fontSize: 13, fontWeight: 'bold' }}>See All</Text>
-            </TouchableOpacity>
-          </View>
-
-          {loading ? (
-            <ActivityIndicator color="#3b82f6" size="large" style={{ marginTop: 20 }} />
-          ) : (
-            recentIncidents.map((incident) => (
-              <TouchableOpacity key={incident.id} style={styles.incidentCard}>
-                <Image 
-                  source={{ uri: `${API_URL}/uploads/${incident.image_name}` }} 
-                  style={styles.incidentImage} 
-                />
-                <View style={styles.info}>
-                  <Text style={styles.type}>{incident.type || 'Unknown'}</Text>
-                  <Text style={styles.desc} numberOfLines={1}>{incident.description || 'No description provided'}</Text>
-                  <View style={[styles.badge, { backgroundColor: incident.priority === 'High' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(59, 130, 246, 0.1)' }]}>
-                    <Text style={[styles.badgeText, { color: incident.priority === 'High' ? '#ef4444' : '#3b82f6' }]}>
-                      {incident.priority}
-                    </Text>
-                  </View>
-                </View>
+          {/* Recent Incidents */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Recent Incidents</Text>
+              <TouchableOpacity onPress={() => router.push('/reports')}>
+                <Text style={styles.seeAllText}>See All</Text>
               </TouchableOpacity>
-            ))
-          )}
+            </View>
+
+            {loading ? (
+              <ActivityIndicator color="#E63939" size="large" style={styles.loader} />
+            ) : (
+              recentIncidents.map((incident: any, index) => (
+                <Animated.View
+                  key={incident.id}
+                  style={[
+                    styles.incidentCard,
+                    {
+                      opacity: fadeAnim,
+                      transform: [{ translateX: fadeAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [50, 0]
+                      })}]
+                    }
+                  ]}
+                >
+                  <TouchableOpacity 
+                    style={styles.incidentContent}
+                    onPress={() => router.push(`/report-details?id=${incident.id}`)}
+                    activeOpacity={0.7}
+                  >
+                    <Image 
+                      source={{ uri: `${API_URL}/uploads/${incident.media_name || incident.image_name}` }} 
+                      style={styles.incidentImage}
+                    />
+                    <View style={styles.incidentInfo}>
+                      <View style={styles.incidentHeader}>
+                        <Text style={styles.incidentType}>{incident.type || 'Unknown'}</Text>
+                        <View style={[styles.priorityBadge, { backgroundColor: `${getPriorityColor(incident.priority)}20` }]}>
+                          <Ionicons name={getPriorityIcon(incident.priority)} size={10} color={getPriorityColor(incident.priority)} />
+                          <Text style={[styles.priorityText, { color: getPriorityColor(incident.priority) }]}>
+                            {incident.priority || 'Normal'}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.incidentDesc} numberOfLines={2}>
+                        {incident.description || 'No description provided'}
+                      </Text>
+                      <View style={styles.incidentFooter}>
+                        <Ionicons name="time-outline" size={12} color="#64748b" />
+                        <Text style={styles.incidentTime}>
+                          {formatTime(incident.created_at)}
+                        </Text>
+                        <View style={[styles.statusDot, { backgroundColor: incident.status === 'Resolved' ? '#10b981' : '#f59e0b' }]} />
+                        <Text style={styles.incidentStatus}>
+                          {incident.status || 'Pending'}
+                        </Text>
+                      </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color="#475569" />
+                  </TouchableOpacity>
+                </Animated.View>
+              ))
+            )}
+          </View>
+
+          {/* Safety Tips Section */}
+          <View style={styles.safetySection}>
+            <LinearGradient colors={['#1e293b', '#0f172a']} style={styles.safetyCard}>
+              <View style={styles.safetyHeader}>
+                <Ionicons name="shield-checkmark" size={24} color="#3b82f6" />
+                <Text style={styles.safetyTitle}>Safety Tip</Text>
+              </View>
+              <Text style={styles.safetyText}>
+                In case of emergency, stay calm, assess the situation, and use the SOS button to report immediately. Your safety is our priority.
+              </Text>
+              <TouchableOpacity style={styles.safetyButton}>
+                <Text style={styles.safetyButtonText}>View All Tips</Text>
+                <Ionicons name="arrow-forward" size={14} color="#3b82f6" />
+              </TouchableOpacity>
+            </LinearGradient>
+          </View>
         </ScrollView>
       </LinearGradient>
     </SafeAreaView>
   );
 }
 
-const ActionBtn = ({ icon, title, color, onPress }: any) => (
-  <TouchableOpacity style={[styles.actionCard, { borderLeftColor: color, borderLeftWidth: 4 }]} onPress={onPress}>
-    <View style={[styles.iconCircle, { backgroundColor: color + '20' }]}>{icon}</View>
-    <Text style={styles.actionTitle}>{title}</Text>
-  </TouchableOpacity>
-);
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#45c966' },
+  container: { flex: 1, backgroundColor: '#0f172a' },
   gradient: { flex: 1 },
-  scroll: { padding: 20 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 40, marginTop: 10 },
-  greeting: { color: '#13db42', fontSize: 44, fontWeight: '500' },
-  userName: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
-  notifBtn: { backgroundColor: 'rgb(109, 216, 32)', p: 10, borderRadius: 12, padding: 10, borderWeight: 1, borderColor: '#334155' },
-  notificationDot: { position: 'absolute', top: 12, right: 12, width: 8, height: 8, borderRadius: 4, backgroundColor: '#ef4444', borderWidth: 1.5, borderColor: '#1e293b' },
-  sosContainer: { alignItems: 'center', marginBottom: 40 },
-  sosButton: { width: 280, height: 280, borderRadius: 90, elevation: 25, shadowColor: '#ef4444', shadowOpacity: 0.9, shadowRadius: 80, shadowOffset: { width: 0, height: 0 } },
-  sosInner: { flex: 1, borderRadius: 90, justifyContent: 'center', alignItems: 'center', borderWidth: 4, borderColor: 'rgba(200, 32, 32, 0.2)' },
-  sosText: { color: '#fff', fontSize: 78, fontWeight: '900' },
-  sosSub: { color: '#4240a8', fontSize: 19, fontWeight: 'bold', letterSpacing: 1.5, marginTop: -5 },
-  sectionTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  quickActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginTop: 15, marginBottom: 25 },
-  actionCard: { width: '48%', backgroundColor: '#1e293b', padding: 15, borderRadius: 18, flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 15, borderBottomWidth: 1, borderBottomColor: '#334155' },
-  iconCircle: { p: 8, borderRadius: 10, padding: 6 },
-  actionTitle: { color: '#fff', fontWeight: '600', fontSize: 14 },
-  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
-  incidentCard: { flexDirection: 'row', backgroundColor: '#1e293b', borderRadius: 20, padding: 12, marginBottom: 12, alignItems: 'center', borderWidth: 1, borderColor: '#334155' },
-
-  incidentImage: { width: 65, height: 65, borderRadius: 15 },
+  scrollContent: { padding: 20 },
   
-  info: { marginLeft: 15, flex: 1 },
-  type: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
-  desc: { color: '#94a3b8', fontSize: 12, marginTop: 3 },
-  badge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6, marginTop: 8 },
-  badgeText: { fontSize: 10, fontWeight: 'bold', textTransform: 'uppercase' }
+  // Header
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
+  greeting: { color: '#94a3b8', fontSize: 14, fontWeight: '500' },
+  userName: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
+  roleBadge: { fontSize: 12, color: '#3b82f6', fontWeight: '500' },
+  notifBtn: { backgroundColor: 'rgba(255,255,255,0.1)', padding: 10, borderRadius: 12, position: 'relative' },
+  notificationDot: { position: 'absolute', top: 6, right: 6, backgroundColor: '#E63939', borderRadius: 10, minWidth: 18, height: 18, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4 },
+  notificationCount: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
+  
+  // Stats
+  statsContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 28, gap: 12 },
+  statCard: { flex: 1 },
+  statGradient: { borderRadius: 16, padding: 12, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  statValue: { fontSize: 24, fontWeight: 'bold', marginTop: 8, marginBottom: 4 },
+  statLabel: { fontSize: 11, color: '#94a3b8', fontWeight: '500' },
+  
+  // SOS Button
+  sosContainer: { alignItems: 'center', marginBottom: 32 },
+  sosButton: { width: width * 0.6, height: width * 0.6, borderRadius: width * 0.3, elevation: 15, shadowColor: '#E63939', shadowOpacity: 0.5, shadowRadius: 30, shadowOffset: { width: 0, height: 0 } },
+  sosInner: { flex: 1, borderRadius: width * 0.3, justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: 'rgba(255,255,255,0.3)' },
+  sosText: { color: '#fff', fontSize: 48, fontWeight: '900', marginTop: 8 },
+  sosSub: { color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: 'bold', letterSpacing: 1, marginTop: 4 },
+  
+  // Sections
+  section: { marginBottom: 28 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  sectionTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  seeAllText: { color: '#E63939', fontSize: 13, fontWeight: '600' },
+  
+  // Quick Actions
+  quickActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 12 },
+  actionCard: { width: (width - 52) / 2, backgroundColor: '#1e293b', borderRadius: 16, borderWidth: 1, borderColor: '#334155', overflow: 'hidden' },
+  actionGradient: { padding: 16, alignItems: 'center' },
+  actionIcon: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  actionTitle: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  
+  // Incident Cards
+  incidentCard: { backgroundColor: '#1e293b', borderRadius: 16, marginBottom: 12, borderWidth: 1, borderColor: '#334155', overflow: 'hidden' },
+  incidentContent: { flexDirection: 'row', padding: 12, alignItems: 'center' },
+  incidentImage: { width: 60, height: 60, borderRadius: 12, backgroundColor: '#0f172a' },
+  incidentInfo: { flex: 1, marginLeft: 12 },
+  incidentHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  incidentType: { color: '#fff', fontSize: 14, fontWeight: 'bold', flex: 1 },
+  priorityBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 12, gap: 4 },
+  priorityText: { fontSize: 9, fontWeight: 'bold' },
+  incidentDesc: { color: '#94a3b8', fontSize: 12, marginBottom: 6 },
+  incidentFooter: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  incidentTime: { color: '#64748b', fontSize: 10 },
+  statusDot: { width: 6, height: 6, borderRadius: 3, marginLeft: 4 },
+  incidentStatus: { color: '#94a3b8', fontSize: 10 },
+  
+  // Safety Section
+  safetySection: { marginTop: 8, marginBottom: 20 },
+  safetyCard: { borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#334155' },
+  safetyHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  safetyTitle: { color: '#fff', fontSize: 14, fontWeight: 'bold' },
+  safetyText: { color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 },
+  safetyButton: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 4 },
+  safetyButtonText: { color: '#3b82f6', fontSize: 12, fontWeight: '500' },
+  
+  loader: { marginTop: 40 }
 });

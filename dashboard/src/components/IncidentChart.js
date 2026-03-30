@@ -1,52 +1,80 @@
-import React from 'react';
-import { Doughnut } from 'react-chartjs-2';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
+// src/components/IncidentChart.js
+import React, { useMemo } from "react";
+import { Pie, Bar } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  ArcElement,
+  Title,
+  Tooltip,
+  Legend,
+} from "chart.js";
 
-ChartJS.register(ArcElement, Tooltip, Legend);
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  ArcElement,
+  Title,
+  Tooltip,
+  Legend,
+);
 
-const IncidentChart = ({ data }) => {
-  const chartData = {
-    labels: ['Fire', 'Accident', 'Crime', 'Medical'],
-    datasets: [{
-      data: [
-        data.filter(i => i.type === 'Fire').length,
-        data.filter(i => i.type === 'Accident').length,
-        data.filter(i => i.type === 'Crime').length,
-        data.filter(i => i.type === 'Medical').length,
+const IncidentChart = ({ incidents }) => {
+  // Pie chart: types
+  const pieData = useMemo(() => {
+    const typeCount = {};
+    incidents.forEach((inc) => {
+      const type = inc.ai_type || "Unknown";
+      typeCount[type] = (typeCount[type] || 0) + 1;
+    });
+    return {
+      labels: Object.keys(typeCount),
+      datasets: [
+        {
+          data: Object.values(typeCount),
+          backgroundColor: [
+            "#FF6384",
+            "#36A2EB",
+            "#FFCE56",
+            "#8AFF33",
+            "#FF8A33",
+          ],
+        },
       ],
-      backgroundColor: [
-        '#ef4444', // Red for Fire
-        '#f59e0b', // Amber for Accident
-        '#3b82f6', // Blue for Crime
-        '#10b981'  // Emerald for Medical
-      ],
-      hoverOffset: 20,
-      borderWidth: 0,
-    }]
-  };
+    };
+  }, [incidents]);
 
-  const options = {
-    plugins: {
-      legend: {
-        position: 'bottom',
-        labels: {
-          padding: 20,
-          usePointStyle: true,
-          font: { size: 12, weight: 'bold' }
-        }
-      }
-    },
-    cutout: '70%', // መሃሉ ክፍት እንዲሆን (Modern Look)
-    maintainAspectRatio: false,
-  };
+  // Bar chart: priority
+  const priorityData = useMemo(() => {
+    const priorityCount = { High: 0, Medium: 0, Low: 0, Unknown: 0 };
+    incidents.forEach((inc) => {
+      const priority = inc.ai_priority || "Unknown";
+      priorityCount[priority] = (priorityCount[priority] || 0) + 1;
+    });
+    return {
+      labels: Object.keys(priorityCount),
+      datasets: [
+        {
+          data: Object.values(priorityCount),
+          backgroundColor: ["#FF4C4C", "#FFCE56", "#36A2EB", "#999"],
+        },
+      ],
+    };
+  }, [incidents]);
 
   return (
-    <div className="h-64 relative">
-      <Doughnut data={chartData} options={options} />
-      {/* መሃል ላይ ጠቅላላ ቁጥሩን ለማሳየት */}
-      <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-        <span className="text-3xl font-black text-slate-800">{data.length}</span>
-        <span className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Total</span>
+    <div className="grid grid-cols-2 gap-6">
+      {/* Pie chart: incident types */}
+      <div className="bg-white p-4 rounded-xl shadow">
+        <Pie data={pieData} />
+      </div>
+
+      {/* Bar chart: priority */}
+      <div className="bg-white p-4 rounded-xl shadow">
+        <Bar data={priorityData} />
       </div>
     </div>
   );

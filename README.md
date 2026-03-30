@@ -58,7 +58,9 @@ Ability to update the status of reports (Pending, In-Progress, Resolved).🛠️
 │   ├── app/(tabs)/     # Bottom navigation layout
 │   └── app/index.js    # Main UI with SOS pulse animation
 └── ai-model/           # FastAPI Image Classification Service
-🚦 Installation & Setup1. PrerequisitesNode.js (v16+)MySQL ServerExpo Go (for mobile testing)2. Database ConfigurationOpen MySQL Workbench.Create a schema named safecity_db.Run the provided SQL migration scripts to create users and incidents tables.
+
+🚦 Installation & Setup1. PrerequisitesNode.js (v16+)MySQL ServerExpo Go (for mobile testing)
+2. Database ConfigurationOpen MySQL Workbench.Create a schema named safecity_db.Run the provided SQL migration scripts to create users and incidents tables.
 3. Running the BackendBashcd backend
 npm install
 npm start
@@ -68,6 +70,28 @@ npm start
 5. Running the Mobile AppBashcd mobile-app
 npm install
 npx expo start
+6. AI-SERVICE
+1.Navigate and Activate Environment
+First, open a new terminal (separate from your Node.js and React terminals) and enter your AI folder. If you are using a virtual environment (recommended), activate it first.
 
+Bash
+# Navigate to the AI folder
+cd ai-model
+
+# If using a virtual environment (Windows)
+venv\Scripts\activate
+
+# If using a virtual environment (Mac/Linux)
+source venv/bin/activate
+2. Start the FastAPI Server
+Run the following command to start the AI service. The --reload flag is great for development as it restarts the server whenever you change the code.
+
+Bash
+uvicorn main:app --port 8000 --reload
+main: Refers to your main.py file.
+
+app: Refers to the FastAPI instance created inside that file (e.g., app = FastAPI()).
+
+--host 0.0.0.0: This allows your Mobile App to connect to the AI server over your local Wi-Fi.
 
 use db in backend/config/safecity_db
