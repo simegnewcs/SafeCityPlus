@@ -15,73 +15,361 @@ const authMiddleware = require('./middleware/authMiddleware');
 // Import routes
 const incidentRoutes = require('./routes/incidentRoutes');
 const authRoutes = require('./routes/authRoutes');
-const adminRoutes = require('./routes/adminRoutes');
+const cctvRoutes = require('./routes/cctvRoutes');
+const usersRoutes = require('./routes/usersRoutes');
 
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io setup with CORS
+// Socket.io setup
 const io = new Server(server, {
     cors: {
-        origin: process.env.CORS_ORIGIN || "*",
-        methods: ["GET", "POST", "PUT", "DELETE"],
+        origin: ["http://localhost:3000", "http://192.168.137.1:3000", "http://localhost:8081", "http://192.168.137.1:8081", "*"],
+        methods: ["GET", "POST"],
         credentials: true
     },
-    pingTimeout: 60000, // 60 seconds for slow connections
+    pingTimeout: 60000,
     pingInterval: 25000
 });
 
-// Make Socket.io available to routes and controllers
-app.set('socketio', io);
+// Store active live streams
+const activeStreams = new Map();
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
-    console.log('✅ New client connected:', socket.id);
-    
-    // Join room based on user role (if authenticated)
-    socket.on('authenticate', (userId) => {
-        if (userId) {
-            socket.join(`user_${userId}`);
-            console.log(`📱 User ${userId} joined their room`);
+    console.log('🔌 Client connected:', socket.id);
+    console.log('📊 Total active streams:', activeStreams.size);
+
+    // Get all active streams (for initial load)
+    socket.on('get-streams', () => {
+        const streams = Array.from(activeStreams.entries()).map(([id, stream]) => ({
+            streamId: id,
+            cameraName: stream.cameraName,
+            location: stream.location,
+            viewerCount: stream.viewers.size,
+            startTime: stream.startTime,
+            duration: Math.floor((Date.now() - stream.startTime) / 1000)
+        }));
+        socket.emit('streams-list', streams);
+    });
+
+    // Broadcaster starts a live stream
+    socket.on('start-stream', (data) => {
+        const { streamId, cameraName, location, userId } = data;
+        
+        const newStream = {
+            broadcasterId: socket.id,
+            cameraName: cameraName || 'Mobile Stream',
+            location: location || 'Unknown',
+            userId: userId || null,
+            viewers: new Set(),
+            startTime: new Date(),
+            streamId: streamId,
+            lastFrame: null
+        };
+        
+        activeStreams.set(streamId, newStream);
+        socket.join(streamId);
+        
+        console.log(`📹 Stream started: ${streamId} - ${cameraName}`);
+        console.log(`📊 Total streams: ${activeStreams.size}`);
+        
+        // BROADCAST TO ALL ADMINS IMMEDIATELY
+        io.emit('stream-started', {
+            streamId,
+            cameraName: newStream.cameraName,
+            location: newStream.location,
+            viewerCount: 0,
+            startTime: newStream.startTime,
+            duration: 0
+        });
+        
+        socket.emit('stream-ready', { streamId, success: true });
+    });
+
+    // Handle video frames from broadcaster
+    socket.on('stream-frame', (data) => {
+        const { streamId, frame, timestamp } = data;
+        console.log(`📡 [DEBUG] Received frame for stream ${streamId}`);
+        console.log(`   - Frame size: ${frame?.length || 0} bytes`);
+        console.log(`   - Timestamp: ${timestamp}`);
+        console.log(`   - Socket ID: ${socket.id}`);
+        
+        const stream = activeStreams.get(streamId);
+        console.log(`   - Stream found: ${!!stream}`);
+        if (stream) {
+            console.log(`   - Is broadcaster: ${stream.broadcasterId === socket.id}`);
+            console.log(`   - Viewers count: ${stream.viewers.size}`);
+        }
+        
+        if (stream && stream.broadcasterId === socket.id) {
+            // Store last frame
+            stream.lastFrame = { frame, timestamp };
+            
+            // Broadcast frame to all viewers in the room
+            const viewersList = Array.from(stream.viewers);
+            console.log(`📤 Broadcasting frame to room ${streamId}, viewers: ${viewersList.length}`);
+            console.log(`   - Viewer IDs: ${viewersList.join(', ')}`);
+            
+            io.to(streamId).emit('stream-frame', {
+                frame,
+                timestamp,
+                streamId
+            });
+            
+            // Send confirmation back to broadcaster
+            socket.emit('frame-received', { streamId, timestamp });
+            console.log(`✅ Frame broadcast complete`);
+        } else {
+            console.warn(`⚠️ Stream ${streamId} not found or not broadcaster`);
+            console.log(`   - Stream exists: ${!!stream}`);
+            if (stream) {
+                console.log(`   - Broadcaster ID: ${stream.broadcasterId}, Current ID: ${socket.id}`);
+                console.log(`   - Match: ${stream.broadcasterId === socket.id}`);
+            }
         }
     });
-    
-    // Join responder room
-    socket.on('join_responder', (responderId) => {
-        if (responderId) {
-            socket.join(`responder_${responderId}`);
-            console.log(`🚨 Responder ${responderId} joined responder room`);
+
+    // Viewer joins a stream
+    socket.on('join-stream', (streamId) => {
+        console.log(`📡 [DEBUG] Join stream request: ${streamId} from socket ${socket.id}`);
+        const stream = activeStreams.get(streamId);
+        if (stream) {
+            stream.viewers.add(socket.id);
+            socket.join(streamId);
+            
+            console.log(`   - Stream found, current viewers: ${stream.viewers.size}`);
+            
+            // Send last frame to new viewer
+            if (stream.lastFrame) {
+                console.log(`   - Sending last frame to new viewer (size: ${stream.lastFrame.frame?.length})`);
+                socket.emit('stream-frame', {
+                    frame: stream.lastFrame.frame,
+                    timestamp: stream.lastFrame.timestamp,
+                    streamId
+                });
+            } else {
+                console.log(`   - No last frame available`);
+            }
+            
+            // Notify broadcaster
+            io.to(stream.broadcasterId).emit('viewer-joined', {
+                viewerId: socket.id,
+                viewerCount: stream.viewers.size
+            });
+            
+            // Notify all admins
+            io.emit('stream-updated', {
+                streamId,
+                viewerCount: stream.viewers.size
+            });
+            
+            console.log(`👁️ Viewer joined stream ${streamId}, total viewers: ${stream.viewers.size}`);
+            socket.emit('joined-stream', { streamId, success: true });
+        } else {
+            console.log(`❌ Stream not found: ${streamId}`);
+            socket.emit('stream-not-found', { streamId });
         }
     });
-    
-    // Handle disconnection
+
+    // Viewer leaves a stream
+    socket.on('leave-stream', (streamId) => {
+        const stream = activeStreams.get(streamId);
+        if (stream) {
+            stream.viewers.delete(socket.id);
+            socket.leave(streamId);
+            
+            // Notify broadcaster about viewer left
+            io.to(stream.broadcasterId).emit('viewer-left', {
+                viewerId: socket.id,
+                viewerCount: stream.viewers.size
+            });
+            
+            // Notify ALL admins about viewer count update
+            io.emit('stream-updated', {
+                streamId,
+                viewerCount: stream.viewers.size
+            });
+            
+            console.log(`👋 Viewer ${socket.id} left stream ${streamId}, remaining: ${stream.viewers.size}`);
+        }
+    });
+
+    // Broadcaster ends stream
+    socket.on('stop-stream', (streamId) => {
+        const stream = activeStreams.get(streamId);
+        if (stream && stream.broadcasterId === socket.id) {
+            // Notify all viewers in the room
+            io.to(streamId).emit('stream-ended', { streamId });
+            
+            // BROADCAST TO ALL ADMINS THAT STREAM ENDED
+            io.emit('stream-ended', { 
+                streamId,
+                cameraName: stream.cameraName 
+            });
+            
+            // Remove stream from active streams
+            activeStreams.delete(streamId);
+            console.log(`🛑 Stream ended: ${streamId}`);
+            console.log(`📊 Remaining streams: ${activeStreams.size}`);
+        }
+    });
+
+    // Handle plain text messages (for join/leave via JSON)
+    socket.on('message', (message) => {
+        try {
+            const data = JSON.parse(message);
+            console.log('📨 Received message:', data);
+            
+            if (data.type === 'join-stream') {
+                const stream = activeStreams.get(data.streamId);
+                if (stream) {
+                    stream.viewers.add(socket.id);
+                    socket.join(data.streamId);
+                    
+                    if (stream.lastFrame) {
+                        socket.emit('stream-frame', {
+                            frame: stream.lastFrame.frame,
+                            timestamp: stream.lastFrame.timestamp,
+                            streamId: data.streamId
+                        });
+                    }
+                    
+                    io.to(stream.broadcasterId).emit('viewer-joined', {
+                        viewerId: socket.id,
+                        viewerCount: stream.viewers.size
+                    });
+                    
+                    io.emit('stream-updated', {
+                        streamId: data.streamId,
+                        viewerCount: stream.viewers.size
+                    });
+                    
+                    console.log(`👁️ Viewer joined stream ${data.streamId} via message, total: ${stream.viewers.size}`);
+                    socket.emit('joined-stream', { streamId: data.streamId, success: true });
+                }
+            } else if (data.type === 'leave-stream') {
+                const stream = activeStreams.get(data.streamId);
+                if (stream) {
+                    stream.viewers.delete(socket.id);
+                    socket.leave(data.streamId);
+                    
+                    io.to(stream.broadcasterId).emit('viewer-left', {
+                        viewerId: socket.id,
+                        viewerCount: stream.viewers.size
+                    });
+                    
+                    io.emit('stream-updated', {
+                        streamId: data.streamId,
+                        viewerCount: stream.viewers.size
+                    });
+                    
+                    console.log(`👋 Viewer left stream ${data.streamId} via message`);
+                }
+            } else if (data.type === 'get-streams') {
+                const streams = Array.from(activeStreams.entries()).map(([id, stream]) => ({
+                    streamId: id,
+                    cameraName: stream.cameraName,
+                    location: stream.location,
+                    viewerCount: stream.viewers.size,
+                    startTime: stream.startTime,
+                    duration: Math.floor((Date.now() - stream.startTime) / 1000)
+                }));
+                socket.emit('streams-list', streams);
+            }
+        } catch (error) {
+            console.error('Error parsing message:', error);
+        }
+    });
+
+    // WebRTC signaling (for future use)
+    socket.on('offer', (data) => {
+        const { streamId, offer, viewerId } = data;
+        const stream = activeStreams.get(streamId);
+        if (stream && stream.broadcasterId) {
+            io.to(stream.broadcasterId).emit('offer', {
+                offer,
+                viewerId: socket.id,
+                streamId
+            });
+        }
+    });
+
+    socket.on('answer', (data) => {
+        const { streamId, answer, broadcasterId } = data;
+        if (broadcasterId) {
+            io.to(broadcasterId).emit('answer', {
+                answer,
+                streamId,
+                viewerId: socket.id
+            });
+        }
+    });
+
+    socket.on('ice-candidate', (data) => {
+        const { streamId, candidate, targetId } = data;
+        if (targetId) {
+            io.to(targetId).emit('ice-candidate', {
+                candidate,
+                fromId: socket.id,
+                streamId
+            });
+        }
+    });
+
     socket.on('disconnect', () => {
-        console.log('❌ Client disconnected:', socket.id);
-    });
-    
-    // Handle errors
-    socket.on('error', (error) => {
-        console.error('Socket error:', error);
+        console.log('🔌 Client disconnected:', socket.id);
+        
+        // Check if this socket was a broadcaster
+        for (const [streamId, stream] of activeStreams.entries()) {
+            if (stream.broadcasterId === socket.id) {
+                // Notify all viewers that stream ended
+                io.to(streamId).emit('stream-ended', { streamId });
+                // Notify all admins
+                io.emit('stream-ended', { 
+                    streamId,
+                    cameraName: stream.cameraName 
+                });
+                // Remove stream
+                activeStreams.delete(streamId);
+                console.log(`🛑 Stream ended (disconnect): ${streamId}`);
+            } else if (stream.viewers.has(socket.id)) {
+                // Remove viewer from stream
+                stream.viewers.delete(socket.id);
+                // Notify broadcaster
+                io.to(stream.broadcasterId).emit('viewer-left', {
+                    viewerId: socket.id,
+                    viewerCount: stream.viewers.size
+                });
+                // Notify admins
+                io.emit('stream-updated', {
+                    streamId,
+                    viewerCount: stream.viewers.size
+                });
+            }
+        }
     });
 });
 
+// Make Socket.io available to routes
+app.set('socketio', io);
+
 // Middleware
 app.use(cors({
-    origin: process.env.CORS_ORIGIN || "*",
+    origin: ["http://localhost:3000", "http://192.168.137.1:3000", "http://localhost:8081", "http://192.168.137.1:8081", "*"],
     credentials: true
 }));
 
-app.use(express.json({ limit: '50mb' })); // Increased limit for large images
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Serve static files (uploaded images)
+// Serve static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Apply authentication middleware globally
-// This will attach user to req if token exists, otherwise req.user = null
 app.use(authMiddleware);
 
-// Request logging middleware (for debugging)
+// Request logging middleware
 app.use((req, res, next) => {
     console.log(`${req.method} ${req.path} - ${req.ip}`);
     next();
@@ -90,16 +378,32 @@ app.use((req, res, next) => {
 // Routes
 app.use('/api/incidents', incidentRoutes);
 app.use('/api/auth', authRoutes);
-app.use('/api/admin', adminRoutes);
+app.use('/api/cctv', cctvRoutes);
+app.use('/api/users', usersRoutes);  // <-- ADDED: Users routes
+
+// Get active streams info (for admin)
+app.get('/api/streams', (req, res) => {
+    const streams = Array.from(activeStreams.entries()).map(([id, stream]) => ({
+        streamId: id,
+        cameraName: stream.cameraName,
+        location: stream.location,
+        viewerCount: stream.viewers.size,
+        startTime: stream.startTime,
+        duration: Math.floor((Date.now() - stream.startTime) / 1000)
+    }));
+    res.json(streams);
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
     res.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
+        activeStreams: activeStreams.size,
         services: {
             database: 'connected',
-            ai_service: 'checking...'
+            socketio: 'running'
         }
     });
 });
@@ -113,13 +417,17 @@ app.get('/', (req, res) => {
         endpoints: {
             incidents: '/api/incidents',
             auth: '/api/auth',
+            cctv: '/api/cctv',
+            users: '/api/users',
+            streams: '/api/streams',
             health: '/health'
         },
+        activeStreams: activeStreams.size,
         documentation: 'https://github.com/your-repo/safecityplus'
     });
 });
 
-// 404 handler - Route not found
+// 404 handler
 app.use((req, res) => {
     res.status(404).json({
         success: false,
@@ -130,89 +438,40 @@ app.use((req, res) => {
 // Global error handler
 app.use((err, req, res, next) => {
     console.error('❌ Global Error:', err.stack);
-    
-    // Handle specific error types
-    if (err.type === 'entity.too.large') {
-        return res.status(413).json({
-            success: false,
-            message: 'File too large. Maximum size is 50MB'
-        });
-    }
-    
-    if (err.code === 'ECONNREFUSED') {
-        return res.status(503).json({
-            success: false,
-            message: 'Database connection failed. Please try again later.'
-        });
-    }
-    
-    // Default error response
     res.status(err.status || 500).json({
         success: false,
-        message: err.message || 'Internal server error',
-        ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+        message: err.message || 'Internal server error'
     });
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('SIGTERM signal received: closing HTTP server');
-    server.close(() => {
-        console.log('HTTP server closed');
-        // Close database connections
-        db.end().catch(err => console.error('Error closing database:', err));
-        process.exit(0);
-    });
-});
-
-process.on('SIGINT', () => {
-    console.log('SIGINT signal received: closing HTTP server');
-    server.close(() => {
-        console.log('HTTP server closed');
-        db.end().catch(err => console.error('Error closing database:', err));
-        process.exit(0);
-    });
-});
-
-// Create uploads directory if it doesn't exist
+// Create uploads directories
 const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    console.log('📁 Uploads directory created');
-}
+const cctvUploadsDir = path.join(__dirname, 'uploads', 'cctv');
+const streamsDir = path.join(__dirname, 'uploads', 'streams');
+
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+if (!fs.existsSync(cctvUploadsDir)) fs.mkdirSync(cctvUploadsDir, { recursive: true });
+if (!fs.existsSync(streamsDir)) fs.mkdirSync(streamsDir, { recursive: true });
+
+console.log('📁 Upload directories ready');
 
 // Start server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     console.log(`
-    ════════════════════════════════════════════
+    ════════════════════════════════════════════════════════
     🚀 SafeCity+ Backend Server
-    ════════════════════════════════════════════
+    ════════════════════════════════════════════════════════
     📡 Server running on: http://localhost:${PORT}
     🔗 API Base URL: http://localhost:${PORT}/api
+    🔌 WebSocket Server: ws://localhost:${PORT}
     💾 Database: ${process.env.DB_NAME || 'safecity_db'}
     🌐 Environment: ${process.env.NODE_ENV || 'development'}
-    ════════════════════════════════════════════
+    📹 CCTV Routes: http://localhost:${PORT}/api/cctv
+    👥 Users Routes: http://localhost:${PORT}/api/users
+    📡 Active Streams: ${activeStreams.size}
+    ════════════════════════════════════════════════════════
     `);
 });
 
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-    console.error('🔥 Uncaught Exception:', error);
-    // Don't exit immediately, log and continue
-    // In production, you might want to gracefully shutdown
-    if (process.env.NODE_ENV === 'production') {
-        process.exit(1);
-    }
-});
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('⚠️ Unhandled Rejection at:', promise, 'reason:', reason);
-    // Don't exit immediately, log and continue
-    if (process.env.NODE_ENV === 'production') {
-        process.exit(1);
-    }
-});
-
-module.exports = { app, server, io };
+module.exports = { app, server, io, activeStreams };

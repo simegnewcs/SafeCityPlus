@@ -1,68 +1,139 @@
 // src/pages/AdminIncidentLogs.js
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
-import { useSocket } from "../hooks/useSocket";
-import IncidentTable from "../components/IncidentTable";
-import { Search, Filter, RefreshCw } from "lucide-react";
+import { Search, RefreshCw, Eye, Download, X, AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
+import axios from "axios";
+
+const API_URL = "http://localhost:5000/api";
 
 const AdminIncidentLogs = () => {
-  const incidents = useSocket();
   const user = JSON.parse(localStorage.getItem("user") || "{}");
-
+  const [incidents, setIncidents] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState("All");
   const [priorityFilter, setPriorityFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedIncident, setSelectedIncident] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(10);
 
-  // Compute unique types
+  // Fetch incidents from API
+  const fetchIncidents = async () => {
+    try {
+      setLoading(true);
+      const response = await axios.get(`${API_URL}/incidents`);
+      setIncidents(response.data);
+    } catch (error) {
+      console.error("Error fetching incidents:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchIncidents();
+    // Refresh every 30 seconds
+    const interval = setInterval(fetchIncidents, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Compute unique types from actual data
   const types = useMemo(() => {
-    const customTypes = ["Fire", "Car Accident", "Electricity"];
-    const typeSet = new Set([
-      ...incidents.map((i) => i.ai_type || "Unknown"),
-      ...customTypes,
-    ]);
-
-    const allTypes = ["All"];
-    const middleTypes = Array.from(typeSet)
-      .filter((t) => t !== "Unknown")
-      .sort();
-    allTypes.push(...middleTypes);
+    const typeSet = new Set(incidents.map((i) => i.type || "Unknown"));
+    const allTypes = ["All", ...Array.from(typeSet).filter(t => t !== "Unknown").sort()];
     if (typeSet.has("Unknown")) allTypes.push("Unknown");
-
     return allTypes;
   }, [incidents]);
 
   // Compute unique priorities
   const priorities = useMemo(() => {
-    const customPriorities = ["High", "Normal", "Critical"];
-    const prioritySet = new Set([
-      ...incidents.map((i) => i.ai_priority || "Unknown"),
-      ...customPriorities,
-    ]);
-
-    const allPriorities = ["All"];
-    const middlePriorities = Array.from(prioritySet)
-      .filter((p) => p !== "Unknown")
-      .sort();
-    allPriorities.push(...middlePriorities);
-    if (prioritySet.has("Unknown")) allPriorities.push("Unknown");
-
-    return allPriorities;
+    const prioritySet = new Set(incidents.map((i) => i.priority || "Normal"));
+    return ["All", ...Array.from(prioritySet).sort()];
   }, [incidents]);
 
-  // Filtered incidents with search
+  // Compute unique statuses
+  const statuses = useMemo(() => {
+    const statusSet = new Set(incidents.map((i) => i.status || "Pending"));
+    return ["All", ...Array.from(statusSet).sort()];
+  }, [incidents]);
+
+  // Filtered incidents
   const filteredIncidents = useMemo(() => {
     return incidents.filter((inc) => {
-      const type = inc.ai_type || "Unknown";
-      const priority = inc.ai_priority || "Unknown";
-      const searchString = `${inc.ai_type} ${inc.ai_priority} ${inc.location || ""}`.toLowerCase();
-
-      const typeMatch = typeFilter === "All" || type === typeFilter;
-      const priorityMatch = priorityFilter === "All" || priority === priorityFilter;
-      const searchMatch = searchTerm === "" || searchString.includes(searchTerm.toLowerCase());
-
-      return typeMatch && priorityMatch && searchMatch;
+      const typeMatch = typeFilter === "All" || (inc.type || "Unknown") === typeFilter;
+      const priorityMatch = priorityFilter === "All" || (inc.priority || "Normal") === priorityFilter;
+      const statusMatch = statusFilter === "All" || (inc.status || "Pending") === statusFilter;
+      const searchMatch = searchTerm === "" || 
+        `${inc.type || ""} ${inc.description || ""}`.toLowerCase().includes(searchTerm.toLowerCase());
+      return typeMatch && priorityMatch && statusMatch && searchMatch;
     });
-  }, [incidents, typeFilter, priorityFilter, searchTerm]);
+  }, [incidents, typeFilter, priorityFilter, statusFilter, searchTerm]);
+
+  // Pagination
+  const totalPages = Math.ceil(filteredIncidents.length / itemsPerPage);
+  const paginatedIncidents = filteredIncidents.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
+
+  const getPriorityColor = (priority) => {
+    switch (priority?.toLowerCase()) {
+      case 'critical': return 'bg-red-100 text-red-700';
+      case 'high': return 'bg-orange-100 text-orange-700';
+      case 'medium': return 'bg-yellow-100 text-yellow-700';
+      default: return 'bg-green-100 text-green-700';
+    }
+  };
+
+  const getStatusColor = (status) => {
+    switch (status?.toLowerCase()) {
+      case 'resolved': return 'bg-green-100 text-green-700';
+      case 'in progress': return 'bg-blue-100 text-blue-700';
+      case 'pending': return 'bg-yellow-100 text-yellow-700';
+      default: return 'bg-gray-100 text-gray-700';
+    }
+  };
+
+  const formatDate = (dateString) => {
+    if (!dateString) return "N/A";
+    const date = new Date(dateString);
+    return date.toLocaleString();
+  };
+
+  const formatLocation = (lat, lng) => {
+    if (!lat || !lng) return "Unknown";
+    const latitude = parseFloat(lat);
+    const longitude = parseFloat(lng);
+    if (isNaN(latitude) || isNaN(longitude)) return "Unknown";
+    return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+  };
+
+  const getMediaUrl = (incident) => {
+    if (incident.media_name) {
+      return `${API_URL.replace('/api', '')}/uploads/${incident.media_name}`;
+    }
+    return null;
+  };
+
+  const isVideo = (incident) => {
+    return incident.media_type === 'video';
+  };
+
+  const handleViewDetails = (incident) => {
+    setSelectedIncident(incident);
+    setShowModal(true);
+  };
+
+  const updateIncidentStatus = async (id, status) => {
+    try {
+      await axios.put(`${API_URL}/incidents/${id}`, { status });
+      fetchIncidents();
+    } catch (error) {
+      console.error("Error updating status:", error);
+    }
+  };
 
   return (
     <div className="flex h-screen bg-zinc-50 text-zinc-900 overflow-hidden">
@@ -76,7 +147,10 @@ const AdminIncidentLogs = () => {
             <p className="text-sm text-zinc-500">Real-time records • {filteredIncidents.length} incidents</p>
           </div>
 
-          <button className="flex items-center gap-2 px-5 py-2 bg-white border border-zinc-300 hover:border-emerald-300 rounded-2xl text-sm font-medium transition-all">
+          <button 
+            onClick={fetchIncidents}
+            className="flex items-center gap-2 px-5 py-2 bg-white border border-zinc-300 hover:border-emerald-300 rounded-2xl text-sm font-medium transition-all"
+          >
             <RefreshCw size={18} className="text-emerald-600" />
             Refresh
           </button>
@@ -94,8 +168,8 @@ const AdminIncidentLogs = () => {
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400" size={20} />
                   <input
                     type="text"
-                    placeholder="Search by type, priority, or location..."
-                    className="w-full pl-12 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-2xl focus:outline-none focus:border-sky-400 transition-colors"
+                    placeholder="Search by type, description..."
+                    className="w-full pl-12 pr-4 py-3 bg-zinc-50 border border-zinc-200 rounded-2xl focus:outline-none focus:border-emerald-400 transition-colors"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                   />
@@ -103,7 +177,7 @@ const AdminIncidentLogs = () => {
               </div>
 
               {/* Type Filter */}
-              <div className="w-full lg:w-64">
+              <div className="w-full lg:w-56">
                 <label className="block text-sm font-medium text-zinc-600 mb-2">Incident Type</label>
                 <select
                   className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-2xl focus:outline-none focus:border-emerald-400 transition-colors"
@@ -111,15 +185,13 @@ const AdminIncidentLogs = () => {
                   onChange={(e) => setTypeFilter(e.target.value)}
                 >
                   {types.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
+                    <option key={type} value={type}>{type}</option>
                   ))}
                 </select>
               </div>
 
               {/* Priority Filter */}
-              <div className="w-full lg:w-64">
+              <div className="w-full lg:w-48">
                 <label className="block text-sm font-medium text-zinc-600 mb-2">Priority</label>
                 <select
                   className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-2xl focus:outline-none focus:border-emerald-400 transition-colors"
@@ -127,9 +199,21 @@ const AdminIncidentLogs = () => {
                   onChange={(e) => setPriorityFilter(e.target.value)}
                 >
                   {priorities.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Status Filter */}
+              <div className="w-full lg:w-48">
+                <label className="block text-sm font-medium text-zinc-600 mb-2">Status</label>
+                <select
+                  className="w-full px-4 py-3 bg-zinc-50 border border-zinc-200 rounded-2xl focus:outline-none focus:border-emerald-400 transition-colors"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                >
+                  {statuses.map((s) => (
+                    <option key={s} value={s}>{s}</option>
                   ))}
                 </select>
               </div>
@@ -139,16 +223,17 @@ const AdminIncidentLogs = () => {
           {/* Results Info */}
           <div className="flex items-center justify-between mb-4 px-1">
             <p className="text-sm text-zinc-500">
-              Showing {filteredIncidents.length} of {incidents.length} incidents
+              Showing {paginatedIncidents.length} of {filteredIncidents.length} incidents
             </p>
-            {(typeFilter !== "All" || priorityFilter !== "All" || searchTerm) && (
+            {(typeFilter !== "All" || priorityFilter !== "All" || statusFilter !== "All" || searchTerm) && (
               <button
                 onClick={() => {
                   setTypeFilter("All");
                   setPriorityFilter("All");
+                  setStatusFilter("All");
                   setSearchTerm("");
                 }}
-                className="text-sm text-sky-600 hover:text-sky-700 font-medium"
+                className="text-sm text-emerald-600 hover:text-emerald-700 font-medium"
               >
                 Clear all filters
               </button>
@@ -157,10 +242,245 @@ const AdminIncidentLogs = () => {
 
           {/* Table Container */}
           <div className="bg-white rounded-3xl shadow-sm border border-zinc-100 overflow-hidden">
-            <IncidentTable data={filteredIncidents} isAdmin={true} />
+            {loading ? (
+              <div className="py-20 text-center">
+                <div className="animate-spin w-8 h-8 border-4 border-emerald-600 border-t-transparent rounded-full mx-auto mb-4"></div>
+                <p className="text-zinc-500">Loading incidents...</p>
+              </div>
+            ) : (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-zinc-50 border-b border-zinc-200">
+                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">ID</th>
+                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Type</th>
+                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Media</th>
+                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Priority</th>
+                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Status</th>
+                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Location</th>
+                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Reported</th>
+                        <th className="px-6 py-4 text-center font-medium text-zinc-500 text-xs uppercase tracking-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {paginatedIncidents.map((incident) => (
+                        <tr key={incident.id} className="hover:bg-zinc-50/50 transition-colors">
+                          <td className="px-6 py-4 font-mono text-xs text-zinc-500">#{incident.id}</td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <AlertTriangle size={14} className="text-zinc-400" />
+                              <span className="font-medium text-zinc-900">{incident.type || "Unknown"}</span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            {incident.media_name ? (
+                              <button
+                                onClick={() => handleViewDetails(incident)}
+                                className="flex items-center gap-1 text-emerald-600 hover:text-emerald-700"
+                              >
+                                <Eye size={14} />
+                                <span className="text-xs">{isVideo(incident) ? "Video" : "Photo"}</span>
+                              </button>
+                            ) : (
+                              <span className="text-zinc-400 text-xs">No media</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4">
+                            <span className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${getPriorityColor(incident.priority)}`}>
+                              {incident.priority || "Normal"}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4">
+                            <select
+                              value={incident.status || "Pending"}
+                              onChange={(e) => updateIncidentStatus(incident.id, e.target.value)}
+                              className={`px-3 py-1 text-xs font-semibold rounded-full border-none focus:ring-1 focus:ring-emerald-400 ${getStatusColor(incident.status)}`}
+                            >
+                              <option value="Pending">Pending</option>
+                              <option value="In Progress">In Progress</option>
+                              <option value="Resolved">Resolved</option>
+                            </select>
+                          </td>
+                          <td className="px-6 py-4 text-zinc-600 text-xs">
+                            {formatLocation(incident.latitude, incident.longitude)}
+                          </td>
+                          <td className="px-6 py-4 text-zinc-500 text-xs">
+                            {formatDate(incident.created_at)}
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <button
+                              onClick={() => handleViewDetails(incident)}
+                              className="p-2 hover:bg-emerald-50 text-emerald-600 rounded-lg transition-colors"
+                              title="View Details"
+                            >
+                              <Eye size={16} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination */}
+                {totalPages > 1 && (
+                  <div className="px-6 py-4 border-t border-zinc-100 flex items-center justify-between">
+                    <p className="text-sm text-zinc-500">
+                      Page {currentPage} of {totalPages}
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                        disabled={currentPage === 1}
+                        className="p-2 border border-zinc-200 rounded-lg hover:bg-zinc-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <ChevronLeft size={18} />
+                      </button>
+                      <button
+                        onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                        disabled={currentPage === totalPages}
+                        className="p-2 border border-zinc-200 rounded-lg hover:bg-zinc-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <ChevronRight size={18} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {filteredIncidents.length === 0 && (
+                  <div className="py-20 text-center">
+                    <AlertTriangle className="w-12 h-12 text-zinc-300 mx-auto mb-3" />
+                    <p className="text-zinc-500 font-medium">No incidents found</p>
+                    <p className="text-sm text-zinc-400 mt-1">Try adjusting your filters</p>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </main>
       </div>
+
+      {/* Incident Detail Modal */}
+      {showModal && selectedIncident && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
+          <div className="bg-white rounded-3xl max-w-3xl w-full max-h-[90vh] overflow-hidden shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6 border-b border-zinc-200 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-zinc-900">Incident #{selectedIncident.id}</h2>
+                <p className="text-sm text-zinc-500 mt-1">{selectedIncident.type || "Unknown Type"}</p>
+              </div>
+              <button onClick={() => setShowModal(false)} className="p-2 hover:bg-zinc-100 rounded-lg transition-colors">
+                <X size={20} className="text-zinc-500" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-6 space-y-6">
+              {/* Media Section */}
+              {getMediaUrl(selectedIncident) && (
+                <div className="bg-zinc-50 rounded-2xl p-4">
+                  <h3 className="font-medium text-zinc-900 mb-3">Evidence Media</h3>
+                  {isVideo(selectedIncident) ? (
+                    <video
+                      src={getMediaUrl(selectedIncident)}
+                      controls
+                      className="w-full rounded-xl max-h-96 object-contain"
+                    />
+                  ) : (
+                    <img
+                      src={getMediaUrl(selectedIncident)}
+                      alt="Incident evidence"
+                      className="w-full rounded-xl max-h-96 object-contain"
+                    />
+                  )}
+                  <button
+                    onClick={() => window.open(getMediaUrl(selectedIncident), '_blank')}
+                    className="mt-3 flex items-center gap-2 text-sm text-emerald-600 hover:text-emerald-700"
+                  >
+                    <Download size={14} />
+                    Download
+                  </button>
+                </div>
+              )}
+
+              {/* Details Grid */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Priority</p>
+                  <p className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${getPriorityColor(selectedIncident.priority)}`}>
+                    {selectedIncident.priority || "Normal"}
+                  </p>
+                </div>
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Status</p>
+                  <p className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${getStatusColor(selectedIncident.status)}`}>
+                    {selectedIncident.status || "Pending"}
+                  </p>
+                </div>
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Confidence</p>
+                  <p className="font-medium text-zinc-900">{selectedIncident.confidence ? `${Math.round(selectedIncident.confidence * 100)}%` : "N/A"}</p>
+                </div>
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Reported By</p>
+                  <p className="font-medium text-zinc-900">{selectedIncident.reporter_name || "Anonymous"}</p>
+                </div>
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Location</p>
+                  <p className="font-medium text-zinc-900 text-sm">
+                    {formatLocation(selectedIncident.latitude, selectedIncident.longitude)}
+                  </p>
+                </div>
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Reported At</p>
+                  <p className="font-medium text-zinc-900 text-sm">{formatDate(selectedIncident.created_at)}</p>
+                </div>
+              </div>
+
+              {/* Description */}
+              {selectedIncident.description && (
+                <div className="bg-zinc-50 p-4 rounded-xl">
+                  <h3 className="font-medium text-zinc-900 mb-2">Description</h3>
+                  <p className="text-zinc-600 text-sm">{selectedIncident.description}</p>
+                </div>
+              )}
+
+              {/* AI Detection Results */}
+              {selectedIncident.all_detections && selectedIncident.all_detections.length > 0 && (
+                <div className="bg-zinc-50 p-4 rounded-xl">
+                  <h3 className="font-medium text-zinc-900 mb-2">AI Detection Results</h3>
+                  <div className="space-y-2">
+                    {selectedIncident.all_detections.map((detection, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-sm">
+                        <span className="text-zinc-600">{detection.ai_type}</span>
+                        <span className="text-emerald-600 font-medium">{detection.confidence ? `${Math.round(detection.confidence * 100)}%` : "N/A"}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-6 border-t border-zinc-200 flex gap-3">
+              <button
+                onClick={() => {
+                  updateIncidentStatus(selectedIncident.id, "Resolved");
+                  setShowModal(false);
+                }}
+                className="flex-1 py-3 bg-green-500 text-white rounded-xl font-medium hover:bg-green-600 transition-colors"
+              >
+                Mark as Resolved
+              </button>
+              <button
+                onClick={() => setShowModal(false)}
+                className="flex-1 py-3 bg-zinc-500 text-white rounded-xl font-medium hover:bg-zinc-600 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
