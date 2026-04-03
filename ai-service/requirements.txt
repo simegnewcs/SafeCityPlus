@@ -3,3 +3,8 @@ uvicorn
 ultralytics
 python-multipart
 pillow
+opencv-python
+psutil
+moviepy
+numpy
+

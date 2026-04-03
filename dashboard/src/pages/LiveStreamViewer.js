@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import AdminSidebar from '../layout/AdminSidebar';
 import { Radio, Eye, MapPin, X, AlertTriangle, Users, Clock, RefreshCw } from 'lucide-react';
 import axios from 'axios';
+import io from 'socket.io-client';
 
 const API_URL = 'http://localhost:5000/api';
-const WS_URL = 'ws://localhost:5000';
+const SOCKET_URL = 'http://localhost:5000';
 
 const LiveStreamViewer = () => {
   const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -16,105 +17,116 @@ const LiveStreamViewer = () => {
   const [streamFrames, setStreamFrames] = useState({});
   const [currentStreamId, setCurrentStreamId] = useState(null);
   
-  const wsRef = useRef(null);
+  const socketRef = useRef(null);
 
   useEffect(() => {
     fetchStreams();
-    connectWebSocket();
+    connectSocket();
     
-    const interval = setInterval(fetchStreams, 5000);
+    const interval = setInterval(fetchStreams, 10000);
     return () => {
       clearInterval(interval);
-      if (wsRef.current) wsRef.current.close();
+      if (socketRef.current) socketRef.current.disconnect();
     };
   }, []);
 
-  const connectWebSocket = () => {
+  const connectSocket = () => {
     try {
-      const ws = new WebSocket(WS_URL);
+      const socket = io(SOCKET_URL, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 2000
+      });
       
-      ws.onopen = () => {
-        console.log('✅ WebSocket connected');
+      socket.on('connect', () => {
+        console.log('✅ Socket.IO connected:', socket.id);
         setIsConnected(true);
-        ws.send(JSON.stringify({ type: 'get-streams' }));
-      };
+        socket.emit('get-streams');
+      });
       
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        console.log('📡 Received:', data.type, data.streamId);
+      socket.on('connect_error', (error) => {
+        console.error('❌ Socket.IO error:', error);
+        setIsConnected(false);
+      });
+      
+      socket.on('disconnect', () => {
+        console.log('🔌 Socket.IO disconnected');
+        setIsConnected(false);
+      });
+      
+      socket.on('streams-list', (data) => {
+        console.log('📡 Received streams list:', data?.length || 0);
+        setStreams(data || []);
+        setLoading(false);
+      });
+      
+      socket.on('stream-started', (data) => {
+        console.log('🎥 Stream started:', data.cameraName);
+        setStreams(prev => [...prev, {
+          streamId: data.streamId,
+          cameraName: data.cameraName,
+          location: data.location,
+          viewerCount: 0,
+          startTime: data.startTime,
+          duration: 0
+        }]);
+      });
+      
+      socket.on('stream-ended', (data) => {
+        console.log('🛑 Stream ended:', data.cameraName);
+        setStreams(prev => prev.filter(s => s.streamId !== data.streamId));
+        if (selectedStream?.streamId === data.streamId) {
+          setSelectedStream(null);
+          setCurrentStreamId(null);
+        }
+        setStreamFrames(prev => {
+          const newFrames = { ...prev };
+          delete newFrames[data.streamId];
+          return newFrames;
+        });
+      });
+      
+      socket.on('stream-updated', (data) => {
+        setStreams(prev => prev.map(s => 
+          s.streamId === data.streamId 
+            ? { ...s, viewerCount: data.viewerCount }
+            : s
+        ));
+      });
+      
+      socket.on('stream-frame', (data) => {
+        console.log(`🎥 Frame received for ${data.streamId}, length: ${data.frame?.length}`);
         
-        if (data.type === 'streams-list') {
-          setStreams(data.streams);
-          setLoading(false);
-        } else if (data.type === 'stream-started') {
-          setStreams(prev => [...prev, {
-            streamId: data.streamId,
-            cameraName: data.cameraName,
-            location: data.location,
-            viewerCount: 0,
-            startTime: data.startTime,
-            duration: 0
-          }]);
-        } else if (data.type === 'stream-ended') {
-          setStreams(prev => prev.filter(s => s.streamId !== data.streamId));
-          if (selectedStream?.streamId === data.streamId) {
-            setSelectedStream(null);
-            setCurrentStreamId(null);
-          }
-          setStreamFrames(prev => {
-            const newFrames = { ...prev };
-            delete newFrames[data.streamId];
-            return newFrames;
-          });
-        } else if (data.type === 'stream-updated') {
-          setStreams(prev => prev.map(s => 
-            s.streamId === data.streamId 
-              ? { ...s, viewerCount: data.viewerCount }
-              : s
-          ));
-        } else if (data.type === 'stream-frame') {
-          console.log(`🎥 Frame received for ${data.streamId}, length: ${data.frame?.length}`);
-          
-          setStreamFrames(prev => ({
-            ...prev,
-            [data.streamId]: data.frame
-          }));
-          
-          // Update thumbnail in list
-          const videoElement = document.getElementById(`video-${data.streamId}`);
-          if (videoElement) {
-            videoElement.src = `data:image/jpeg;base64,${data.frame}`;
-            videoElement.style.display = 'block';
-            const placeholder = document.getElementById(`placeholder-${data.streamId}`);
-            if (placeholder) placeholder.style.display = 'none';
-          }
-          
-          // Update modal if this is the current stream
-          if (currentStreamId === data.streamId) {
-            const modalVideo = document.getElementById('modal-video');
-            if (modalVideo) {
-              modalVideo.src = `data:image/jpeg;base64,${data.frame}`;
-              modalVideo.style.display = 'block';
-              const modalPlaceholder = document.getElementById('modal-placeholder');
-              if (modalPlaceholder) modalPlaceholder.style.display = 'none';
-            }
+        setStreamFrames(prev => ({
+          ...prev,
+          [data.streamId]: data.frame
+        }));
+        
+        // Update thumbnail in list
+        const imgElement = document.getElementById(`video-${data.streamId}`);
+        if (imgElement) {
+          imgElement.src = `data:image/jpeg;base64,${data.frame}`;
+          imgElement.style.display = 'block';
+          const placeholder = document.getElementById(`placeholder-${data.streamId}`);
+          if (placeholder) placeholder.style.display = 'none';
+        }
+        
+        // Update modal if this is the current stream
+        if (currentStreamId === data.streamId) {
+          const modalImg = document.getElementById('modal-video');
+          if (modalImg) {
+            modalImg.src = `data:image/jpeg;base64,${data.frame}`;
+            modalImg.style.display = 'block';
+            const modalPlaceholder = document.getElementById('modal-placeholder');
+            if (modalPlaceholder) modalPlaceholder.style.display = 'none';
           }
         }
-      };
+      });
       
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-      
-      ws.onclose = () => {
-        console.log('WebSocket disconnected, reconnecting...');
-        setIsConnected(false);
-        setTimeout(connectWebSocket, 3000);
-      };
-      
-      wsRef.current = ws;
+      socketRef.current = socket;
     } catch (error) {
-      console.error('WebSocket connection error:', error);
+      console.error('Socket.IO connection error:', error);
     }
   };
 
@@ -133,6 +145,9 @@ const LiveStreamViewer = () => {
   const handleRefresh = () => {
     setRefreshing(true);
     fetchStreams();
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('get-streams');
+    }
   };
 
   const watchStream = (stream) => {
@@ -140,21 +155,15 @@ const LiveStreamViewer = () => {
     setSelectedStream(stream);
     setCurrentStreamId(stream.streamId);
     
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'join-stream',
-        streamId: stream.streamId
-      }));
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('join-stream', stream.streamId);
       console.log(`📡 Sent join-stream for ${stream.streamId}`);
     }
   };
 
   const closeStream = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && currentStreamId) {
-      wsRef.current.send(JSON.stringify({
-        type: 'leave-stream',
-        streamId: currentStreamId
-      }));
+    if (socketRef.current && socketRef.current.connected && currentStreamId) {
+      socketRef.current.emit('leave-stream', currentStreamId);
     }
     setSelectedStream(null);
     setCurrentStreamId(null);
@@ -253,7 +262,7 @@ const LiveStreamViewer = () => {
                       style={{ display: streamFrames[stream.streamId] ? 'none' : 'flex' }}
                     >
                       <Radio className="w-12 h-12 text-red-500 mb-2 animate-pulse" />
-                      <p className="text-white text-xs">Loading stream...</p>
+                      <p className="text-white text-xs">Waiting for stream...</p>
                     </div>
                     <div className="absolute top-3 left-3 flex items-center gap-2 z-10">
                       <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>

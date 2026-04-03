@@ -60,7 +60,7 @@ const AdminSidebar = ({ user, onClose }) => {
       </div>
 
       {/* User Profile */}
-      <div className="p-6 border-b border-zinc-800">
+      {/* <div className="p-6 border-b border-zinc-800">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-violet-600 rounded-2xl flex items-center justify-center text-lg font-semibold ring-2 ring-zinc-700 flex-shrink-0 transition-transform hover:scale-110">
             {user?.fullName?.charAt(0) || "A"}
@@ -72,7 +72,7 @@ const AdminSidebar = ({ user, onClose }) => {
             </div>
           )}
         </div>
-      </div>
+      </div> */}
 
       {/* Navigation Menu */}
       <nav className="flex-1 p-3 overflow-y-auto">

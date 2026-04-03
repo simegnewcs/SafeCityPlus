@@ -196,8 +196,8 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0f172a" />
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.gradient}>
+      <StatusBar barStyle="light-content" backgroundColor="rgb(44, 99, 226)" />
+      <LinearGradient colors={['#1845b0', '#1e293b']} style={styles.gradient}>
         <ScrollView 
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
@@ -228,11 +228,11 @@ export default function HomeScreen() {
           </Animated.View>
 
           {/* Stats Section */}
-          <View style={styles.statsContainer}>
+          {/* <View style={styles.statsContainer}>
             <StatCard icon="stats-chart" value={stats.total} label="Total Reports" color="#3b82f6" />
             <StatCard icon="time" value={stats.active} label="Active" color="#f59e0b" />
             <StatCard icon="checkmark-circle" value={stats.resolved} label="Resolved" color="#10b981" />
-          </View>
+          </View> */}
 
           {/* SOS Emergency Button */}
           <Animated.View style={[styles.sosContainer, { transform: [{ scale: pulseAnim }] }]}>
@@ -354,7 +354,7 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a' },
+  container: { flex: 1, backgroundColor: '#20c34c' },
   gradient: { flex: 1 },
   scrollContent: { padding: 20 },
   

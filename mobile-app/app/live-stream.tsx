@@ -14,12 +14,12 @@ import * as ImageManipulator from 'expo-image-manipulator';
 
 const { width, height } = Dimensions.get('window');
 
-// Try multiple connection options
+// Server connection URLs
 const SERVER_IPS = [
-  'http://192.168.137.1:5000',  // Your local IP
-  'http://192.168.1.100:5000',  // Common local IP
-  'http://10.0.2.2:5000',       // Android emulator localhost
-  'http://localhost:5000',       // Localhost (iOS simulator)
+  'http://192.168.137.1:5000',
+  'http://192.168.1.100:5000',
+  'http://10.0.2.2:5000',
+  'http://localhost:5000',
 ];
 
 export default function LiveStreamScreen() {
@@ -34,6 +34,7 @@ export default function LiveStreamScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [socketUrl, setSocketUrl] = useState<string>(SERVER_IPS[0]);
+  const [frameCount, setFrameCount] = useState(0);
   
   const cameraRef = useRef<any>(null);
   const socketRef = useRef<any>(null);
@@ -47,7 +48,6 @@ export default function LiveStreamScreen() {
     getLocation();
     connectToServer();
     
-    // Listen for app state changes (background/foreground)
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     
     return () => {
@@ -61,11 +61,7 @@ export default function LiveStreamScreen() {
 
   const handleAppStateChange = (nextAppState: string) => {
     if (nextAppState === 'active' && !socketRef.current?.connected && !isStreaming) {
-      // Reconnect when app comes to foreground
       connectToServer();
-    } else if (nextAppState === 'background' && isStreaming) {
-      // Optionally pause streaming when in background
-      console.log('App in background, continuing stream...');
     }
   };
 
@@ -75,7 +71,7 @@ export default function LiveStreamScreen() {
       setConnectionStatus('disconnected');
       Alert.alert(
         'Connection Error',
-        'Unable to connect to the server. Please check your network connection and server status.',
+        'Unable to connect to the server. Please check your network connection.',
         [
           { text: 'Retry', onPress: () => connectToServer(0) },
           { text: 'Go Back', onPress: () => router.back() }
@@ -91,7 +87,6 @@ export default function LiveStreamScreen() {
     console.log(`Attempting to connect to: ${url}`);
     
     try {
-      // First, test if the server is reachable via HTTP
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
       
@@ -110,7 +105,6 @@ export default function LiveStreamScreen() {
       
       console.log(`✅ Server reachable at ${url}`);
       
-      // Connect Socket.IO
       const socket = io(url, {
         transports: ['websocket', 'polling'],
         reconnection: true,
@@ -125,7 +119,6 @@ export default function LiveStreamScreen() {
         setConnectionStatus('connected');
         connectionAttempts.current = 0;
         
-        // If we were streaming, restart the stream
         if (isStreaming && streamId) {
           restartStream();
         }
@@ -134,21 +127,11 @@ export default function LiveStreamScreen() {
       socket.on('connect_error', (error) => {
         console.error('❌ Socket.IO connection error:', error.message);
         setConnectionStatus('disconnected');
-        
-        if (connectionAttempts.current < 3) {
-          connectionAttempts.current++;
-          setTimeout(() => connectToServer(ipIndex), 2000);
-        }
       });
       
       socket.on('disconnect', (reason) => {
         console.log('🔌 Socket.IO disconnected:', reason);
         setConnectionStatus('disconnected');
-        
-        if (isStreaming && reason !== 'io client disconnect') {
-          // Try to reconnect if we were streaming
-          setTimeout(() => connectToServer(ipIndex), 3000);
-        }
       });
       
       socket.on('viewer-joined', (data: any) => {
@@ -159,6 +142,11 @@ export default function LiveStreamScreen() {
       socket.on('viewer-left', (data: any) => {
         setViewerCount(data.viewerCount);
         console.log(`👋 Viewer left, total: ${data.viewerCount}`);
+      });
+      
+      socket.on('frame-received', (data: any) => {
+        console.log(`✅ Frame confirmed by server: ${data.streamId}`);
+        setFrameCount(prev => prev + 1);
       });
       
       socket.on('stream-error', (data: any) => {
@@ -209,47 +197,39 @@ export default function LiveStreamScreen() {
       console.error('Location error:', error);
     }
   };
-// In live-stream.tsx, update captureAndSendFrame function
-const captureAndSendFrame = async () => {
-  if (!cameraRef.current || !isStreaming || !socketRef.current?.connected) return;
-  
-  try {
-    console.log('📸 Capturing frame...');
-    
-    const photo = await cameraRef.current.takePictureAsync({
-      quality: 0.4,
-      base64: true,
-      skipProcessing: true,
-    });
-    
-    if (photo && photo.base64) {
-      console.log('📸 Frame captured, size:', photo.base64.length);
-      
-      // Compress image
-      const compressed = await ImageManipulator.manipulateAsync(
-        photo.uri,
-        [{ resize: { width: 640 } }],
-        { compress: 0.5, base64: true, format: ImageManipulator.SaveFormat.JPEG }
-      );
-      
-      if (compressed.base64) {
-        console.log('📤 Sending frame, compressed size:', compressed.base64.length);
-        
-        // Send frame to server
-        socketRef.current.emit('stream-frame', {
-          streamId,
-          frame: compressed.base64,
-          timestamp: Date.now()
-        });
-        
-        // Add this to verify frame was sent
-        console.log('✅ Frame sent successfully at:', new Date().toISOString());
-      }
+
+  const captureAndSendFrame = async () => {
+    if (!cameraRef.current || !isStreaming || !socketRef.current?.connected || !streamId) {
+      return;
     }
-  } catch (error) {
-    console.error('❌ Error capturing frame:', error);
-  }
-};
+    
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.3,
+        base64: true,
+        skipProcessing: true,
+      });
+      
+      if (photo && photo.base64 && photo.base64.length > 1000) {
+        // Compress image for faster transmission
+        const compressed = await ImageManipulator.manipulateAsync(
+          photo.uri,
+          [{ resize: { width: 480 } }],
+          { compress: 0.5, base64: true, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        
+        if (compressed.base64) {
+          socketRef.current.emit('stream-frame', {
+            streamId: streamId,
+            frame: compressed.base64,
+            timestamp: Date.now()
+          });
+        }
+      }
+    } catch (error) {
+      // Silent fail - don't spam console with frame errors
+    }
+  };
 
   const startStreaming = async () => {
     if (!permission?.granted) {
@@ -261,26 +241,21 @@ const captureAndSendFrame = async () => {
     }
     
     if (connectionStatus !== 'connected') {
-      Alert.alert(
-        'Not Connected',
-        'Please wait for connection to server or check your network.',
-        [{ text: 'OK' }]
-      );
+      Alert.alert('Not Connected', 'Please wait for connection to server.');
       return;
     }
     
     setIsLoading(true);
     
     try {
-      // Generate unique stream ID
       const newStreamId = `stream_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       setStreamId(newStreamId);
+      setFrameCount(0);
       
       const userData = await AsyncStorage.getItem('userData');
       const user = userData ? JSON.parse(userData) : null;
       const isGuest = await AsyncStorage.getItem('isGuest');
       
-      // Start stream on signaling server
       socketRef.current.emit('start-stream', {
         streamId: newStreamId,
         cameraName: user?.fullName ? `${user.fullName}'s Stream` : (isGuest === 'true' ? 'Guest Stream' : 'Mobile Stream'),
@@ -292,15 +267,14 @@ const captureAndSendFrame = async () => {
       setStreamDuration(0);
       setIsRecording(true);
       
-      // Start duration timer
       durationTimer.current = setInterval(() => {
         setStreamDuration(prev => prev + 1);
       }, 1000);
       
-      // Start frame capture every 1000ms (1 FPS - reduced for better performance)
+      // Start frame capture every 2 seconds (0.5 FPS for better performance)
       frameInterval.current = setInterval(() => {
         captureAndSendFrame();
-      }, 1000);
+      }, 2000);
       
       Alert.alert('Stream Started', 'Your live stream is now active. Admin can view it instantly.');
       
@@ -331,6 +305,7 @@ const captureAndSendFrame = async () => {
     setStreamId(null);
     setViewerCount(0);
     setStreamDuration(0);
+    setFrameCount(0);
     
     Alert.alert('Stream Ended', 'Your live stream has been stopped.');
     router.back();
@@ -352,7 +327,6 @@ const captureAndSendFrame = async () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Show connection status while connecting
   if (connectionStatus === 'connecting' && !isStreaming) {
     return (
       <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
@@ -360,10 +334,7 @@ const captureAndSendFrame = async () => {
           <ActivityIndicator size="large" color="#E63939" />
           <Text style={styles.connectingText}>Connecting to server...</Text>
           <Text style={styles.connectingSubText}>{socketUrl}</Text>
-          <TouchableOpacity 
-            style={styles.retryButton}
-            onPress={() => connectToServer(0)}
-          >
+          <TouchableOpacity style={styles.retryButton} onPress={() => connectToServer(0)}>
             <Text style={styles.retryButtonText}>Retry Connection</Text>
           </TouchableOpacity>
         </View>
@@ -389,12 +360,8 @@ const captureAndSendFrame = async () => {
     return (
       <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
         <View style={styles.startContainer}>
-          {/* Connection status indicator */}
           <View style={styles.connectionStatus}>
-            <View style={[
-              styles.connectionDot,
-              connectionStatus === 'connected' ? styles.connectedDot : styles.disconnectedDot
-            ]} />
+            <View style={[styles.connectionDot, connectionStatus === 'connected' ? styles.connectedDot : styles.disconnectedDot]} />
             <Text style={styles.connectionText}>
               {connectionStatus === 'connected' ? 'Connected to server' : 'Disconnected from server'}
             </Text>
@@ -419,10 +386,7 @@ const captureAndSendFrame = async () => {
           </View>
           
           <TouchableOpacity 
-            style={[
-              styles.startButton,
-              connectionStatus !== 'connected' && styles.disabledButton
-            ]} 
+            style={[styles.startButton, connectionStatus !== 'connected' && styles.disabledButton]} 
             onPress={startStreaming}
             disabled={isLoading || connectionStatus !== 'connected'}
           >
@@ -454,7 +418,7 @@ const captureAndSendFrame = async () => {
         style={styles.camera}
         facing={cameraType === 'back' ? 'back' : 'front'}
         mode="video"
-        videoQuality="480p" // Use lower quality for better performance
+        videoQuality="480p"
       >
         <LinearGradient
           colors={['rgba(0,0,0,0.7)', 'transparent']}
@@ -471,6 +435,9 @@ const captureAndSendFrame = async () => {
             </View>
             <View style={styles.durationContainer}>
               <Text style={styles.durationText}>{formatDuration(streamDuration)}</Text>
+            </View>
+            <View style={styles.frameCountContainer}>
+              <Text style={styles.frameCountText}>📡 {frameCount}</Text>
             </View>
           </View>
           
@@ -535,7 +502,7 @@ const styles = StyleSheet.create({
   startButtonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   disabledButton: { opacity: 0.6 },
   topOverlay: { position: 'absolute', top: 0, left: 0, right: 0, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: Platform.OS === 'ios' ? 50 : 30, paddingHorizontal: 20, paddingBottom: 20 },
-  streamInfo: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  streamInfo: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   liveBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E63939', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, gap: 6 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' },
   liveText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
@@ -543,6 +510,8 @@ const styles = StyleSheet.create({
   viewerCountText: { color: '#fff', fontSize: 12 },
   durationContainer: { backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20 },
   durationText: { color: '#fff', fontSize: 12 },
+  frameCountContainer: { backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20 },
+  frameCountText: { color: '#fff', fontSize: 10 },
   stopButton: { backgroundColor: 'rgba(0,0,0,0.5)', padding: 8, borderRadius: 30 },
   recordingIndicator: { position: 'absolute', top: 100, right: 20, flexDirection: 'row', alignItems: 'center', backgroundColor: '#E63939', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, gap: 6 },
   recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' },

@@ -30,50 +30,103 @@ const mapPriority = (priority) => {
     return mapping[key] || 'Normal';
 };
 
-// Helper function to get video duration (simplified)
+// Get video duration from file (estimate)
 const getVideoDuration = async (videoPath) => {
     try {
-        // For now, return a placeholder duration
-        // In production, you'd use ffprobe or a library
-        return 5; // Default 5 seconds
+        const stats = fs.statSync(videoPath);
+        // Rough estimate: ~1MB per 10 seconds for compressed video
+        const estimatedDuration = Math.min(Math.floor(stats.size / (1024 * 100)), 60);
+        return estimatedDuration > 0 ? estimatedDuration : 5;
     } catch (error) {
         console.error('Error getting video duration:', error);
-        return 0;
+        return 5;
     }
 };
 
-// Helper function to extract frames from video (simplified)
-const extractFrames = async (videoPath, intervalSeconds = 2) => {
-    // For now, return placeholder frames
-    // In production, you'd use ffmpeg
-    return [
-        { timestamp: 0, path: videoPath, description: "Start of video" },
-        { timestamp: 2, path: videoPath, description: "Mid video analysis" },
-        { timestamp: 4, path: videoPath, description: "End of video" }
-    ];
+// Simple video analysis
+const analyzeVideoFrames = async (videoPath, incidentId) => {
+    try {
+        console.log('📹 Processing video for AI analysis...');
+        
+        // Get video duration
+        const duration = await getVideoDuration(videoPath);
+        
+        // Analyze the video file by sending to AI service
+        const formData = new FormData();
+        formData.append('image', fs.createReadStream(videoPath));
+        
+        try {
+            const aiResponse = await axios.post('http://127.0.0.1:8000/analyze', formData, {
+                headers: formData.getHeaders(),
+                timeout: 30000
+            });
+            
+            const result = aiResponse.data;
+            console.log(`✅ Video analysis complete: ${result.type} (${Math.round(result.confidence * 100)}% confidence)`);
+            
+            return {
+                type: result.type || 'Video Evidence',
+                confidence: result.confidence || 0.7,
+                severity: result.severity || 'Medium',
+                priority: result.priority || 'Medium',
+                detections: result.detections || [],
+                video_duration: duration
+            };
+        } catch (aiError) {
+            console.error('AI analysis error for video:', aiError.message);
+            return {
+                type: 'Video Evidence',
+                confidence: 0.6,
+                severity: 'Medium',
+                priority: 'Medium',
+                detections: [
+                    {
+                        type: 'Video Recording',
+                        confidence: 0.6,
+                        severity: 'Medium',
+                        priority: 'Medium'
+                    }
+                ],
+                video_duration: duration
+            };
+        }
+        
+    } catch (error) {
+        console.error('Video analysis error:', error);
+        return {
+            type: 'Video Evidence',
+            confidence: 0.5,
+            severity: 'Low',
+            priority: 'Normal',
+            detections: [],
+            video_duration: 0
+        };
+    }
 };
 
-// Handle video upload and analysis
+// Handle video upload and storage
 const handleVideoUpload = async (videoPath, incidentId) => {
     try {
         const videoDuration = await getVideoDuration(videoPath);
-        
-        // Save to video_recordings table
-        const sql = `INSERT INTO video_recordings 
-                     (incident_id, video_url, duration, file_size, resolution, ai_analyzed) 
-                     VALUES (?, ?, ?, ?, ?, ?)`;
-        
         const stats = fs.statSync(videoPath);
+        const videoUrl = path.basename(videoPath);
+        const now = new Date();
+        const formattedTime = now.toISOString().slice(0, 19).replace('T', ' ');
+        
+        // Insert into video_recordings table (camera_id is NULL for mobile recordings)
+        const sql = `INSERT INTO video_recordings 
+                     (camera_id, incident_id, video_url, start_time, duration, file_size, ai_analyzed) 
+                     VALUES (NULL, ?, ?, ?, ?, ?, 1)`;
+        
         await db.execute(sql, [
             incidentId,
-            path.basename(videoPath),
+            videoUrl,
+            formattedTime,
             videoDuration,
-            stats.size,
-            '1920x1080',
-            true
+            stats.size
         ]);
         
-        console.log(`✅ Video recording saved with duration: ${videoDuration}s`);
+        console.log(`✅ Video recording saved with duration: ${videoDuration}s, size: ${stats.size} bytes`);
         return { success: true, duration: videoDuration };
     } catch (error) {
         console.error('Video upload error:', error);
@@ -81,58 +134,7 @@ const handleVideoUpload = async (videoPath, incidentId) => {
     }
 };
 
-// Analyze video frames
-const analyzeVideoFrames = async (videoPath, incidentId) => {
-    try {
-        const frames = await extractFrames(videoPath, 2);
-        const detections = [];
-        
-        for (const frame of frames) {
-            const formData = new FormData();
-            formData.append('image', fs.createReadStream(frame.path));
-            
-            try {
-                const aiResponse = await axios.post('http://127.0.0.1:8000/analyze', formData, {
-                    headers: formData.getHeaders(),
-                    timeout: 30000
-                });
-                
-                detections.push({
-                    timestamp: frame.timestamp,
-                    ...aiResponse.data
-                });
-            } catch (aiError) {
-                console.error(`Frame analysis error at ${frame.timestamp}s:`, aiError.message);
-            }
-        }
-        
-        // Save video analysis to ai_logs
-        if (detections.length > 0) {
-            const sql = `INSERT INTO ai_logs 
-                         (incident_id, source, media_type, ai_type, confidence, severity, priority, 
-                          video_duration, key_frames, raw_response) 
-                         VALUES (?, 'mobile', 'video', ?, ?, ?, ?, ?, ?, ?)`;
-            
-            await db.execute(sql, [
-                incidentId,
-                'Video Analysis',
-                detections[0]?.confidence || 0,
-                mapSeverity(detections[0]?.severity || 'Low'),
-                mapPriority(detections[0]?.priority || 'Normal'),
-                frames.length * 2,
-                JSON.stringify(detections),
-                JSON.stringify({ frames: detections })
-            ]);
-        }
-        
-        return detections;
-    } catch (error) {
-        console.error('Video analysis error:', error);
-        return [];
-    }
-};
-
-// Main report incident function (UNIFIED)
+// Main report incident function
 exports.reportIncident = async (req, res) => {
     try {
         const { latitude, longitude, description, mediaType } = req.body;
@@ -156,21 +158,24 @@ exports.reportIncident = async (req, res) => {
 
         let aiResult = null;
         let detections = [];
+        let videoDuration = 0;
 
         // Process based on media type
         if (isVideo) {
             console.log('🎥 Processing video...');
-            // Analyze video frames
-            detections = await analyzeVideoFrames(filePath, 0);
-            aiResult = detections.length > 0 ? detections[0] : {
-                type: 'Video Evidence',
-                confidence: 0.7,
-                severity: 'Medium',
-                priority: 'Medium'
+            const videoAnalysis = await analyzeVideoFrames(filePath, 0);
+            aiResult = {
+                type: videoAnalysis.type,
+                confidence: videoAnalysis.confidence,
+                severity: videoAnalysis.severity,
+                priority: videoAnalysis.priority
             };
+            detections = videoAnalysis.detections || [];
+            videoDuration = videoAnalysis.video_duration || 0;
+            console.log(`✅ Video analysis complete: ${aiResult.type} (${Math.round(aiResult.confidence * 100)}% confidence)`);
         } else {
-            // Process image with AI
-            console.log('📷 Processing image...');
+            // Process image with AI service
+            console.log('📷 Sending to AI service for analysis...');
             const formData = new FormData();
             formData.append('image', fs.createReadStream(filePath));
             
@@ -181,6 +186,7 @@ exports.reportIncident = async (req, res) => {
             
             aiResult = aiResponse.data;
             detections = aiResult.detections || [];
+            console.log(`✅ AI Analysis complete: ${aiResult.type} (${Math.round(aiResult.confidence * 100)}% confidence)`);
         }
 
         // Map values for database compatibility
@@ -212,16 +218,8 @@ exports.reportIncident = async (req, res) => {
         console.log(`✅ Incident saved with ID: ${incidentId}, User ID: ${userId}`);
 
         // Handle video-specific operations
-        let videoDuration = 0;
         if (isVideo) {
-            const videoResult = await handleVideoUpload(filePath, incidentId);
-            videoDuration = videoResult.duration || 0;
-            
-            // Re-analyze with incident ID for proper association
-            const videoAnalysis = await analyzeVideoFrames(filePath, incidentId);
-            if (videoAnalysis.length > 0) {
-                detections = videoAnalysis;
-            }
+            await handleVideoUpload(filePath, incidentId);
         }
 
         // Save detections to ai_logs
@@ -267,7 +265,16 @@ exports.reportIncident = async (req, res) => {
             all_detections: detections || [],
             total_detections: detections?.length || 0,
             media_type: isVideo ? 'video' : 'image',
-            video_duration: videoDuration
+            video_duration: videoDuration,
+            ai_analysis: {
+                primary: {
+                    type: aiResult?.type,
+                    confidence: aiResult?.confidence,
+                    severity: mappedSeverity,
+                    priority: mappedPriority
+                },
+                all_detections: detections
+            }
         };
 
         // Real-time update via Socket.io
@@ -304,7 +311,7 @@ Check dashboard immediately!`;
             }
         }
 
-        // Return success response
+        // Return success response with AI analysis
         res.status(201).json({ 
             success: true, 
             incident: newIncident,
@@ -316,7 +323,11 @@ Check dashboard immediately!`;
                     priority: mappedPriority
                 },
                 all_detections: detections,
-                total_detections: detections?.length || 0
+                total_detections: detections?.length || 0,
+                video_info: isVideo ? {
+                    duration: videoDuration,
+                    analyzed: true
+                } : null
             }
         });
         
@@ -507,7 +518,7 @@ exports.updateIncidentStatus = async (req, res) => {
                 [incident[0].user_id]
             );
             
-            if (user[0]?.phone) {
+            if (user[0]?.phone && process.env.TWILIO_NUMBER) {
                 try {
                     await twilioClient.messages.create({
                         body: `🚨 SafeCity+ Update: Your ${incident[0].type} incident #${id} status changed to "${status}". Thank you for reporting!`,

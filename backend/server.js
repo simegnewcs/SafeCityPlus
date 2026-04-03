@@ -21,15 +21,25 @@ const usersRoutes = require('./routes/usersRoutes');
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io setup
+// Socket.io setup with proper CORS for all clients
 const io = new Server(server, {
     cors: {
-        origin: ["http://localhost:3000", "http://192.168.137.1:3000", "http://localhost:8081", "http://192.168.137.1:8081", "*"],
+        origin: [
+            "http://localhost:3000",
+            "http://192.168.137.1:3000", 
+            "http://localhost:8081",
+            "http://192.168.137.1:8081",
+            "http://10.0.2.2:8081",
+            "http://localhost:5000",
+            "http://192.168.137.1:5000",
+            "*"
+        ],
         methods: ["GET", "POST"],
         credentials: true
     },
     pingTimeout: 60000,
-    pingInterval: 25000
+    pingInterval: 25000,
+    transports: ['websocket', 'polling']
 });
 
 // Store active live streams
@@ -42,6 +52,7 @@ io.on('connection', (socket) => {
 
     // Get all active streams (for initial load)
     socket.on('get-streams', () => {
+        console.log('📡 get-streams request from:', socket.id);
         const streams = Array.from(activeStreams.entries()).map(([id, stream]) => ({
             streamId: id,
             cameraName: stream.cameraName,
@@ -51,11 +62,14 @@ io.on('connection', (socket) => {
             duration: Math.floor((Date.now() - stream.startTime) / 1000)
         }));
         socket.emit('streams-list', streams);
+        console.log(`📤 Sent ${streams.length} streams to ${socket.id}`);
     });
 
     // Broadcaster starts a live stream
     socket.on('start-stream', (data) => {
         const { streamId, cameraName, location, userId } = data;
+        
+        console.log(`🎥 Starting stream: ${streamId} - ${cameraName} from ${socket.id}`);
         
         const newStream = {
             broadcasterId: socket.id,
@@ -85,54 +99,34 @@ io.on('connection', (socket) => {
         });
         
         socket.emit('stream-ready', { streamId, success: true });
+        console.log(`✅ Stream ready confirmation sent to ${socket.id}`);
     });
 
     // Handle video frames from broadcaster
     socket.on('stream-frame', (data) => {
         const { streamId, frame, timestamp } = data;
-        console.log(`📡 [DEBUG] Received frame for stream ${streamId}`);
-        console.log(`   - Frame size: ${frame?.length || 0} bytes`);
-        console.log(`   - Timestamp: ${timestamp}`);
-        console.log(`   - Socket ID: ${socket.id}`);
+        console.log(`📡 Received frame for stream ${streamId}, size: ${frame?.length || 0} from ${socket.id}`);
         
         const stream = activeStreams.get(streamId);
-        console.log(`   - Stream found: ${!!stream}`);
-        if (stream) {
-            console.log(`   - Is broadcaster: ${stream.broadcasterId === socket.id}`);
-            console.log(`   - Viewers count: ${stream.viewers.size}`);
-        }
-        
         if (stream && stream.broadcasterId === socket.id) {
-            // Store last frame
             stream.lastFrame = { frame, timestamp };
-            
-            // Broadcast frame to all viewers in the room
-            const viewersList = Array.from(stream.viewers);
-            console.log(`📤 Broadcasting frame to room ${streamId}, viewers: ${viewersList.length}`);
-            console.log(`   - Viewer IDs: ${viewersList.join(', ')}`);
-            
+            console.log(`📤 Broadcasting frame to ${stream.viewers.size} viewers in room ${streamId}`);
+            // Broadcast to all viewers in the room
             io.to(streamId).emit('stream-frame', {
                 frame,
                 timestamp,
                 streamId
             });
-            
             // Send confirmation back to broadcaster
             socket.emit('frame-received', { streamId, timestamp });
-            console.log(`✅ Frame broadcast complete`);
         } else {
-            console.warn(`⚠️ Stream ${streamId} not found or not broadcaster`);
-            console.log(`   - Stream exists: ${!!stream}`);
-            if (stream) {
-                console.log(`   - Broadcaster ID: ${stream.broadcasterId}, Current ID: ${socket.id}`);
-                console.log(`   - Match: ${stream.broadcasterId === socket.id}`);
-            }
+            console.log(`❌ Stream ${streamId} not found or not broadcaster`);
         }
     });
 
     // Viewer joins a stream
     socket.on('join-stream', (streamId) => {
-        console.log(`📡 [DEBUG] Join stream request: ${streamId} from socket ${socket.id}`);
+        console.log(`📡 Join stream request: ${streamId} from socket ${socket.id}`);
         const stream = activeStreams.get(streamId);
         if (stream) {
             stream.viewers.add(socket.id);
@@ -149,10 +143,10 @@ io.on('connection', (socket) => {
                     streamId
                 });
             } else {
-                console.log(`   - No last frame available`);
+                console.log(`   - No last frame available, waiting for first frame`);
             }
             
-            // Notify broadcaster
+            // Notify broadcaster about new viewer
             io.to(stream.broadcasterId).emit('viewer-joined', {
                 viewerId: socket.id,
                 viewerCount: stream.viewers.size
@@ -174,6 +168,7 @@ io.on('connection', (socket) => {
 
     // Viewer leaves a stream
     socket.on('leave-stream', (streamId) => {
+        console.log(`👋 Leave stream request: ${streamId} from ${socket.id}`);
         const stream = activeStreams.get(streamId);
         if (stream) {
             stream.viewers.delete(socket.id);
@@ -197,6 +192,7 @@ io.on('connection', (socket) => {
 
     // Broadcaster ends stream
     socket.on('stop-stream', (streamId) => {
+        console.log(`🛑 Stop stream request: ${streamId} from ${socket.id}`);
         const stream = activeStreams.get(streamId);
         if (stream && stream.broadcasterId === socket.id) {
             // Notify all viewers in the room
@@ -215,11 +211,11 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Handle plain text messages (for join/leave via JSON)
+    // Handle plain text messages (for backward compatibility)
     socket.on('message', (message) => {
         try {
             const data = JSON.parse(message);
-            console.log('📨 Received message:', data);
+            console.log('📨 Received message:', data.type);
             
             if (data.type === 'join-stream') {
                 const stream = activeStreams.get(data.streamId);
@@ -282,41 +278,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // WebRTC signaling (for future use)
-    socket.on('offer', (data) => {
-        const { streamId, offer, viewerId } = data;
-        const stream = activeStreams.get(streamId);
-        if (stream && stream.broadcasterId) {
-            io.to(stream.broadcasterId).emit('offer', {
-                offer,
-                viewerId: socket.id,
-                streamId
-            });
-        }
-    });
-
-    socket.on('answer', (data) => {
-        const { streamId, answer, broadcasterId } = data;
-        if (broadcasterId) {
-            io.to(broadcasterId).emit('answer', {
-                answer,
-                streamId,
-                viewerId: socket.id
-            });
-        }
-    });
-
-    socket.on('ice-candidate', (data) => {
-        const { streamId, candidate, targetId } = data;
-        if (targetId) {
-            io.to(targetId).emit('ice-candidate', {
-                candidate,
-                fromId: socket.id,
-                streamId
-            });
-        }
-    });
-
     socket.on('disconnect', () => {
         console.log('🔌 Client disconnected:', socket.id);
         
@@ -356,7 +317,14 @@ app.set('socketio', io);
 
 // Middleware
 app.use(cors({
-    origin: ["http://localhost:3000", "http://192.168.137.1:3000", "http://localhost:8081", "http://192.168.137.1:8081", "*"],
+    origin: [
+        "http://localhost:3000",
+        "http://192.168.137.1:3000",
+        "http://localhost:8081",
+        "http://192.168.137.1:8081",
+        "http://10.0.2.2:8081",
+        "*"
+    ],
     credentials: true
 }));
 
@@ -379,7 +347,7 @@ app.use((req, res, next) => {
 app.use('/api/incidents', incidentRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/cctv', cctvRoutes);
-app.use('/api/users', usersRoutes);  // <-- ADDED: Users routes
+app.use('/api/users', usersRoutes);
 
 // Get active streams info (for admin)
 app.get('/api/streams', (req, res) => {

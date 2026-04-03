@@ -5,7 +5,7 @@ import {
   Platform
 } from 'react-native';
 import { CameraView, useCameraPermissions, FlashMode, CameraMode } from 'expo-camera';
-import { Video } from 'expo-av'; // Add this import for video playback
+import { Video } from 'expo-av';
 import * as Location from 'expo-location';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
@@ -27,11 +27,11 @@ export default function CameraScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [showGrid, setShowGrid] = useState(true);
-  const [detectedObjects, setDetectedObjects] = useState<string[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [torchEnabled, setTorchEnabled] = useState(false);
   const [isLoadingPermissions, setIsLoadingPermissions] = useState(true);
   const [videoDuration, setVideoDuration] = useState(0);
+  const [cameraType, setCameraType] = useState<'front' | 'back'>('back');
   
   const cameraRef = useRef<any>(null);
   const router = useRouter();
@@ -80,22 +80,8 @@ export default function CameraScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
   };
 
-  const detectObjects = async (mediaUri: string, isVideo: boolean = false) => {
-    setIsAnalyzing(true);
-    try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      const mockDetections = isVideo 
-        ? ['Vehicle Detected', 'Person Walking', 'Check Surroundings']
-        : ['Person Detected', 'Vehicle Present', 'Check Surroundings'];
-      setDetectedObjects(mockDetections);
-      return mockDetections;
-    } catch (error) {
-      console.error('Detection error:', error);
-      return [];
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
+  // AI detection will be handled by backend when reporting
+  // No need to call AI directly here
 
   const panResponder = PanResponder.create({
     onStartShouldSetPanResponder: () => true,
@@ -124,7 +110,6 @@ export default function CameraScreen() {
           { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
         );
         
-        await detectObjects(manipulatedImage.uri);
         setPhoto(manipulatedImage.uri);
         setVideo(null);
       } catch (error) {
@@ -186,7 +171,6 @@ export default function CameraScreen() {
       if (videoRecord && videoRecord.uri) {
         setVideo(videoRecord.uri);
         setPhoto(null);
-        await detectObjects(videoRecord.uri, true);
         
         Alert.alert(
           'Video Recorded',
@@ -232,8 +216,14 @@ export default function CameraScreen() {
     }
   };
 
+  const toggleCamera = () => {
+    setCameraType(prev => prev === 'back' ? 'front' : 'back');
+  };
+
   const handleReport = async () => {
     try {
+      setIsAnalyzing(true);
+      
       let location = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
       });
@@ -241,6 +231,7 @@ export default function CameraScreen() {
       const mediaUri = photo || video;
       const mediaType = video ? 'video' : 'image';
       
+      // Navigate to report details - backend will handle AI analysis
       router.push({
         pathname: '/report-details',
         params: { 
@@ -249,12 +240,13 @@ export default function CameraScreen() {
           videoDuration: videoDuration.toString(),
           latitude: location.coords.latitude.toString(), 
           longitude: location.coords.longitude.toString(),
-          detectedObjects: JSON.stringify(detectedObjects)
         }
       });
     } catch (error) {
       console.error('Location error:', error);
       Alert.alert('Location Error', 'Could not get your location. Please enable GPS.');
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
@@ -299,6 +291,7 @@ export default function CameraScreen() {
           zoom={zoom}
           flash={flash}
           mode={cameraMode}
+          facing={cameraType}
           animateShutter={true}
           enableTorch={torchEnabled}
           {...panResponder.panHandlers}
@@ -383,6 +376,13 @@ export default function CameraScreen() {
               </TouchableOpacity>
             </View>
 
+            {/* Camera Flip Button */}
+            <View style={styles.flipButtonContainer}>
+              <TouchableOpacity style={styles.flipButton} onPress={toggleCamera}>
+                <Ionicons name="camera-reverse" size={24} color="white" />
+              </TouchableOpacity>
+            </View>
+
             <View style={styles.zoomContainer}>
               <Ionicons name="remove" size={20} color="white" />
               <View style={styles.sliderWrapper}>
@@ -441,27 +441,10 @@ export default function CameraScreen() {
             />
           )}
           
-          {detectedObjects.length > 0 && (
-            <View style={styles.detectionResults}>
-              <LinearGradient colors={['rgba(0,0,0,0.8)', 'transparent']} style={styles.detectionHeader}>
-                <Ionicons name="scan-outline" size={18} color="#E63939" />
-                <Text style={styles.detectionTitle}>AI Detection Results</Text>
-              </LinearGradient>
-              <View style={styles.detectionList}>
-                {detectedObjects.map((obj, index) => (
-                  <View key={index} style={styles.detectionItem}>
-                    <Ionicons name="warning-outline" size={14} color="#E63939" />
-                    <Text style={styles.detectionText}>{obj}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-          )}
-          
           {isAnalyzing && (
             <View style={styles.analyzingOverlay}>
               <ActivityIndicator size="large" color="#E63939" />
-              <Text style={styles.analyzingText}>AI Analyzing Scene...</Text>
+              <Text style={styles.analyzingText}>Preparing for analysis...</Text>
             </View>
           )}
           
@@ -469,7 +452,6 @@ export default function CameraScreen() {
             <TouchableOpacity onPress={() => {
               setPhoto(null);
               setVideo(null);
-              setDetectedObjects([]);
               setVideoDuration(0);
             }} style={styles.retryButton}>
               <Ionicons name="refresh" size={24} color="white" />
@@ -509,6 +491,8 @@ const styles = StyleSheet.create({
   activeMode: { backgroundColor: 'rgba(230, 57, 57, 0.3)' },
   modeText: { color: 'white', fontSize: 14, fontWeight: '500' },
   activeModeText: { color: '#E63939' },
+  flipButtonContainer: { alignItems: 'center', marginBottom: 15 },
+  flipButton: { backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 30 },
   zoomContainer: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, paddingHorizontal: 10 },
   sliderWrapper: { flex: 1, marginHorizontal: 10, position: 'relative', height: 30, justifyContent: 'center' },
   sliderTrack: { height: 2, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2 },
@@ -528,12 +512,6 @@ const styles = StyleSheet.create({
   recordingTime: { color: 'white', fontSize: 14, fontWeight: 'bold' },
   previewContainer: { flex: 1, backgroundColor: '#0f172a' },
   preview: { flex: 1, borderRadius: 20, margin: 10 },
-  detectionResults: { position: 'absolute', top: 70, left: 15, right: 15, backgroundColor: 'rgba(0,0,0,0.8)', borderRadius: 12, overflow: 'hidden' },
-  detectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12 },
-  detectionTitle: { color: 'white', fontSize: 12, fontWeight: 'bold' },
-  detectionList: { paddingHorizontal: 12, paddingBottom: 12 },
-  detectionItem: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-  detectionText: { color: '#E63939', fontSize: 11, fontWeight: '500' },
   analyzingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
   analyzingText: { color: 'white', marginTop: 12, fontSize: 14 },
   actionButtons: { flexDirection: 'row', justifyContent: 'space-around', padding: 25, paddingBottom: 40 },

@@ -1,7 +1,11 @@
 // src/pages/AdminIncidentLogs.js
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
-import { Search, RefreshCw, Eye, Download, X, AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
+import { 
+  Search, RefreshCw, Eye, Download, X, AlertTriangle, 
+  ChevronLeft, ChevronRight, Play, Pause, Volume2, 
+  Maximize2, Scan, Camera, Video as VideoIcon
+} from "lucide-react";
 import axios from "axios";
 
 const API_URL = "http://localhost:5000/api";
@@ -18,6 +22,10 @@ const AdminIncidentLogs = () => {
   const [showModal, setShowModal] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
+  const [selectedDetection, setSelectedDetection] = useState(null);
+  const [showDetectionModal, setShowDetectionModal] = useState(false);
+  
+  const videoRef = useRef(null);
 
   // Fetch incidents from API
   const fetchIncidents = async () => {
@@ -34,7 +42,6 @@ const AdminIncidentLogs = () => {
 
   useEffect(() => {
     fetchIncidents();
-    // Refresh every 30 seconds
     const interval = setInterval(fetchIncidents, 30000);
     return () => clearInterval(interval);
   }, []);
@@ -47,19 +54,16 @@ const AdminIncidentLogs = () => {
     return allTypes;
   }, [incidents]);
 
-  // Compute unique priorities
   const priorities = useMemo(() => {
     const prioritySet = new Set(incidents.map((i) => i.priority || "Normal"));
     return ["All", ...Array.from(prioritySet).sort()];
   }, [incidents]);
 
-  // Compute unique statuses
   const statuses = useMemo(() => {
     const statusSet = new Set(incidents.map((i) => i.status || "Pending"));
     return ["All", ...Array.from(statusSet).sort()];
   }, [incidents]);
 
-  // Filtered incidents
   const filteredIncidents = useMemo(() => {
     return incidents.filter((inc) => {
       const typeMatch = typeFilter === "All" || (inc.type || "Unknown") === typeFilter;
@@ -71,7 +75,6 @@ const AdminIncidentLogs = () => {
     });
   }, [incidents, typeFilter, priorityFilter, statusFilter, searchTerm]);
 
-  // Pagination
   const totalPages = Math.ceil(filteredIncidents.length / itemsPerPage);
   const paginatedIncidents = filteredIncidents.slice(
     (currentPage - 1) * itemsPerPage,
@@ -126,6 +129,11 @@ const AdminIncidentLogs = () => {
     setShowModal(true);
   };
 
+  const handleDetectionClick = (detection) => {
+    setSelectedDetection(detection);
+    setShowDetectionModal(true);
+  };
+
   const updateIncidentStatus = async (id, status) => {
     try {
       await axios.put(`${API_URL}/incidents/${id}`, { status });
@@ -161,7 +169,6 @@ const AdminIncidentLogs = () => {
           {/* Filters Section */}
           <div className="bg-white rounded-3xl shadow-sm border border-zinc-100 p-6 mb-8">
             <div className="flex flex-col lg:flex-row gap-6">
-              {/* Search Bar */}
               <div className="flex-1">
                 <label className="block text-sm font-medium text-zinc-600 mb-2">Search Incidents</label>
                 <div className="relative">
@@ -176,7 +183,6 @@ const AdminIncidentLogs = () => {
                 </div>
               </div>
 
-              {/* Type Filter */}
               <div className="w-full lg:w-56">
                 <label className="block text-sm font-medium text-zinc-600 mb-2">Incident Type</label>
                 <select
@@ -190,7 +196,6 @@ const AdminIncidentLogs = () => {
                 </select>
               </div>
 
-              {/* Priority Filter */}
               <div className="w-full lg:w-48">
                 <label className="block text-sm font-medium text-zinc-600 mb-2">Priority</label>
                 <select
@@ -204,7 +209,6 @@ const AdminIncidentLogs = () => {
                 </select>
               </div>
 
-              {/* Status Filter */}
               <div className="w-full lg:w-48">
                 <label className="block text-sm font-medium text-zinc-600 mb-2">Status</label>
                 <select
@@ -279,7 +283,7 @@ const AdminIncidentLogs = () => {
                                 onClick={() => handleViewDetails(incident)}
                                 className="flex items-center gap-1 text-emerald-600 hover:text-emerald-700"
                               >
-                                <Eye size={14} />
+                                {isVideo(incident) ? <VideoIcon size={14} /> : <Camera size={14} />}
                                 <span className="text-xs">{isVideo(incident) ? "Video" : "Photo"}</span>
                               </button>
                             ) : (
@@ -326,9 +330,7 @@ const AdminIncidentLogs = () => {
                 {/* Pagination */}
                 {totalPages > 1 && (
                   <div className="px-6 py-4 border-t border-zinc-100 flex items-center justify-between">
-                    <p className="text-sm text-zinc-500">
-                      Page {currentPage} of {totalPages}
-                    </p>
+                    <p className="text-sm text-zinc-500">Page {currentPage} of {totalPages}</p>
                     <div className="flex gap-2">
                       <button
                         onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
@@ -364,7 +366,7 @@ const AdminIncidentLogs = () => {
       {/* Incident Detail Modal */}
       {showModal && selectedIncident && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
-          <div className="bg-white rounded-3xl max-w-3xl w-full max-h-[90vh] overflow-hidden shadow-xl" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] overflow-hidden shadow-xl" onClick={(e) => e.stopPropagation()}>
             <div className="p-6 border-b border-zinc-200 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-semibold text-zinc-900">Incident #{selectedIncident.id}</h2>
@@ -382,9 +384,11 @@ const AdminIncidentLogs = () => {
                   <h3 className="font-medium text-zinc-900 mb-3">Evidence Media</h3>
                   {isVideo(selectedIncident) ? (
                     <video
+                      ref={videoRef}
                       src={getMediaUrl(selectedIncident)}
                       controls
                       className="w-full rounded-xl max-h-96 object-contain"
+                      controlsList="nodownload"
                     />
                   ) : (
                     <img
@@ -445,16 +449,37 @@ const AdminIncidentLogs = () => {
                 </div>
               )}
 
-              {/* AI Detection Results */}
+              {/* AI Detection Results - Clickable */}
               {selectedIncident.all_detections && selectedIncident.all_detections.length > 0 && (
                 <div className="bg-zinc-50 p-4 rounded-xl">
-                  <h3 className="font-medium text-zinc-900 mb-2">AI Detection Results</h3>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Scan size={18} className="text-emerald-600" />
+                    <h3 className="font-medium text-zinc-900">AI Detection Results</h3>
+                    <span className="text-xs text-zinc-400">(Click on any detection for details)</span>
+                  </div>
                   <div className="space-y-2">
                     {selectedIncident.all_detections.map((detection, idx) => (
-                      <div key={idx} className="flex items-center justify-between text-sm">
-                        <span className="text-zinc-600">{detection.ai_type}</span>
-                        <span className="text-emerald-600 font-medium">{detection.confidence ? `${Math.round(detection.confidence * 100)}%` : "N/A"}</span>
-                      </div>
+                      <button
+                        key={idx}
+                        onClick={() => handleDetectionClick(detection)}
+                        className="w-full flex items-center justify-between text-sm p-3 bg-white rounded-xl border border-zinc-200 hover:border-emerald-300 hover:shadow-md transition-all cursor-pointer group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 bg-emerald-100 rounded-lg flex items-center justify-center group-hover:bg-emerald-200 transition-colors">
+                            <Scan size={14} className="text-emerald-600" />
+                          </div>
+                          <span className="text-zinc-700 font-medium">{detection.ai_type}</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="text-emerald-600 font-semibold">
+                            {detection.confidence ? `${Math.round(detection.confidence * 100)}%` : "N/A"}
+                          </span>
+                          <span className={`text-xs px-2 py-1 rounded-full ${getPriorityColor(detection.priority)}`}>
+                            {detection.priority || "Normal"}
+                          </span>
+                          <ChevronRight size={16} className="text-zinc-400 group-hover:text-emerald-600 transition-colors" />
+                        </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -474,6 +499,70 @@ const AdminIncidentLogs = () => {
               <button
                 onClick={() => setShowModal(false)}
                 className="flex-1 py-3 bg-zinc-500 text-white rounded-xl font-medium hover:bg-zinc-600 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Detection Detail Modal */}
+      {showDetectionModal && selectedDetection && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={() => setShowDetectionModal(false)}>
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6 border-b border-zinc-200 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center">
+                  <Scan size={20} className="text-emerald-600" />
+                </div>
+                <h2 className="text-xl font-semibold text-zinc-900">Detection Details</h2>
+              </div>
+              <button onClick={() => setShowDetectionModal(false)} className="p-2 hover:bg-zinc-100 rounded-lg transition-colors">
+                <X size={20} className="text-zinc-500" />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div className="bg-zinc-50 p-4 rounded-xl">
+                <p className="text-zinc-500 text-xs mb-1">Detected Object</p>
+                <p className="text-lg font-bold text-zinc-900">{selectedDetection.ai_type}</p>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Confidence</p>
+                  <p className="text-xl font-bold text-emerald-600">
+                    {selectedDetection.confidence ? `${Math.round(selectedDetection.confidence * 100)}%` : "N/A"}
+                  </p>
+                </div>
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Priority</p>
+                  <p className={`inline-flex px-3 py-1 text-sm font-semibold rounded-full ${getPriorityColor(selectedDetection.priority)}`}>
+                    {selectedDetection.priority || "Normal"}
+                  </p>
+                </div>
+              </div>
+              
+              <div className="bg-zinc-50 p-3 rounded-xl">
+                <p className="text-zinc-500 text-xs mb-1">Severity</p>
+                <p className="text-lg font-bold text-zinc-900">{selectedDetection.severity || "Unknown"}</p>
+              </div>
+              
+              {selectedDetection.raw_response && (
+                <div className="bg-zinc-50 p-3 rounded-xl">
+                  <p className="text-zinc-500 text-xs mb-1">Additional Data</p>
+                  <p className="text-xs text-zinc-600 break-words">
+                    {JSON.stringify(JSON.parse(selectedDetection.raw_response), null, 2)}
+                  </p>
+                </div>
+              )}
+            </div>
+            
+            <div className="p-6 border-t border-zinc-200">
+              <button
+                onClick={() => setShowDetectionModal(false)}
+                className="w-full py-3 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-700 transition-colors"
               >
                 Close
               </button>

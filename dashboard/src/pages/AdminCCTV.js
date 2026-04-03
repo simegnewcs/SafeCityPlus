@@ -6,10 +6,10 @@ import {
   Circle, Users, MapPin
 } from "lucide-react";
 import axios from "axios";
-import io from 'socket.io-client';  // Add this import
+import io from 'socket.io-client';
 
 const API_URL = "http://localhost:5000/api";
-const SOCKET_URL = "http://localhost:5000";  // Change from ws:// to http://
+const SOCKET_URL = "http://localhost:5000";
 
 const AdminCCTV = () => {
   const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -32,7 +32,6 @@ const AdminCCTV = () => {
   const [showStreamModal, setShowStreamModal] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [streamFrames, setStreamFrames] = useState({});
-  const [streamInitialized, setStreamInitialized] = useState({});
   
   const socketRef = useRef(null);
 
@@ -40,11 +39,12 @@ const AdminCCTV = () => {
     fetchCameras();
     fetchAlerts();
     fetchLiveStreams();
-    connectSocket();  // Changed from connectWebSocket
+    connectSocket();
     
     const interval = setInterval(() => {
       fetchCameras();
       fetchAlerts();
+      fetchLiveStreams();
     }, 10000);
     
     return () => {
@@ -55,7 +55,6 @@ const AdminCCTV = () => {
 
   const connectSocket = () => {
     try {
-      // Create Socket.IO connection
       const socket = io(SOCKET_URL, {
         transports: ['websocket', 'polling'],
         reconnection: true,
@@ -67,8 +66,6 @@ const AdminCCTV = () => {
       socket.on('connect', () => {
         console.log('✅ Socket.IO connected:', socket.id);
         setIsConnected(true);
-        
-        // Request streams list
         socket.emit('get-streams');
       });
       
@@ -83,9 +80,9 @@ const AdminCCTV = () => {
       });
       
       socket.on('streams-list', (streams) => {
-        console.log('📡 Received streams list:', streams.length);
-        setLiveStreams(streams);
-        setStats(prev => ({ ...prev, liveStreams: streams.length }));
+        console.log('📡 Received streams list:', streams?.length || 0);
+        setLiveStreams(streams || []);
+        setStats(prev => ({ ...prev, liveStreams: streams?.length || 0 }));
       });
       
       socket.on('stream-started', (data) => {
@@ -94,9 +91,8 @@ const AdminCCTV = () => {
           streamId: data.streamId,
           cameraName: data.cameraName,
           location: data.location,
-          viewerCount: data.viewerCount || 0,
-          startTime: data.startTime,
-          duration: data.duration || 0
+          viewerCount: 0,
+          startTime: data.startTime
         }]);
         setStats(prev => ({ ...prev, liveStreams: prev.liveStreams + 1 }));
         addAlert(`🎥 New live stream started: ${data.cameraName}`);
@@ -106,28 +102,14 @@ const AdminCCTV = () => {
         console.log('🛑 Stream ended:', data);
         setLiveStreams(prev => prev.filter(s => s.streamId !== data.streamId));
         setStats(prev => ({ ...prev, liveStreams: prev.liveStreams - 1 }));
-        
         if (selectedStream?.streamId === data.streamId) {
           setShowStreamModal(false);
           setSelectedStream(null);
         }
-        
-        // Clean up frame data
-        setStreamFrames(prev => {
-          const newFrames = { ...prev };
-          delete newFrames[data.streamId];
-          return newFrames;
-        });
-        setStreamInitialized(prev => {
-          const newInit = { ...prev };
-          delete newInit[data.streamId];
-          return newInit;
-        });
         addAlert(`🛑 Live stream ended: ${data.cameraName}`);
       });
       
       socket.on('stream-updated', (data) => {
-        console.log('📊 Stream updated:', data);
         setLiveStreams(prev => prev.map(s => 
           s.streamId === data.streamId 
             ? { ...s, viewerCount: data.viewerCount }
@@ -135,52 +117,34 @@ const AdminCCTV = () => {
         ));
       });
       
-     // In AdminCCTV.js, update the socket event handlers
-socket.on('stream-frame', (data) => {
-  console.log('📡 Received frame for stream:', data.streamId, 'size:', data.frame?.length);
-  
-  // Update frame data
-  setStreamFrames(prev => ({
-    ...prev,
-    [data.streamId]: data.frame
-  }));
-  
-  if (!streamInitialized[data.streamId]) {
-    setStreamInitialized(prev => ({ ...prev, [data.streamId]: true }));
-    console.log('🎬 Stream initialized:', data.streamId);
-  }
-  
-  // Update the video element directly
-  const videoElement = document.getElementById(`video-${data.streamId}`);
-  if (videoElement) {
-    const imageUrl = `data:image/jpeg;base64,${data.frame}`;
-    videoElement.src = imageUrl;
-    videoElement.style.display = 'block';
-    
-    // Hide placeholder
-    const placeholder = document.getElementById(`placeholder-${data.streamId}`);
-    if (placeholder) {
-      placeholder.style.display = 'none';
-    }
-    
-    console.log('🎬 Updated video element for stream:', data.streamId);
-  } else {
-    console.warn('Video element not found for stream:', data.streamId);
-  }
-  
-  // Also update modal video if it's the selected stream
-  if (selectedStream?.streamId === data.streamId) {
-    const modalVideo = document.getElementById('modal-video');
-    if (modalVideo) {
-      modalVideo.src = `data:image/jpeg;base64,${data.frame}`;
-      modalVideo.style.display = 'block';
-      const modalPlaceholder = document.getElementById('modal-placeholder');
-      if (modalPlaceholder) {
-        modalPlaceholder.style.display = 'none';
-      }
-    }
-  }
-});
+      socket.on('stream-frame', (data) => {
+        console.log('📡 Received frame for stream:', data.streamId, 'size:', data.frame?.length);
+        
+        setStreamFrames(prev => ({
+          ...prev,
+          [data.streamId]: data.frame
+        }));
+        
+        // Update thumbnail in list
+        const videoElement = document.getElementById(`video-${data.streamId}`);
+        if (videoElement) {
+          videoElement.src = `data:image/jpeg;base64,${data.frame}`;
+          videoElement.style.display = 'block';
+          const placeholder = document.getElementById(`placeholder-${data.streamId}`);
+          if (placeholder) placeholder.style.display = 'none';
+        }
+        
+        // Update modal video if this is the selected stream
+        if (selectedStream?.streamId === data.streamId) {
+          const modalVideo = document.getElementById('modal-video');
+          if (modalVideo) {
+            modalVideo.src = `data:image/jpeg;base64,${data.frame}`;
+            modalVideo.style.display = 'block';
+            const modalPlaceholder = document.getElementById('modal-placeholder');
+            if (modalPlaceholder) modalPlaceholder.style.display = 'none';
+          }
+        }
+      });
       
       socketRef.current = socket;
     } catch (error) {
@@ -283,26 +247,12 @@ socket.on('stream-frame', (data) => {
     setSelectedStream(stream);
     setShowStreamModal(true);
     
-    // Join the stream via Socket.IO
     if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('join-stream', stream.streamId);
+      console.log('📡 Joined stream:', stream.streamId);
     }
-    
-    // Reset modal video state
-    setTimeout(() => {
-      const modalVideo = document.getElementById('modal-video');
-      if (modalVideo && streamFrames[stream.streamId]) {
-        modalVideo.src = `data:image/jpeg;base64,${streamFrames[stream.streamId]}`;
-        modalVideo.style.display = 'block';
-        const modalPlaceholder = document.getElementById('modal-placeholder');
-        if (modalPlaceholder) {
-          modalPlaceholder.style.display = 'none';
-        }
-      }
-    }, 100);
   };
 
-  // Add this to leave stream when modal closes
   const closeStreamModal = () => {
     if (selectedStream && socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('leave-stream', selectedStream.streamId);
@@ -335,13 +285,6 @@ socket.on('stream-frame', (data) => {
     if (diff < 60) return `${diff} min ago`;
     if (diff < 1440) return `${Math.floor(diff / 60)} hours ago`;
     return `${Math.floor(diff / 1440)} days ago`;
-  };
-
-  const formatDuration = (seconds) => {
-    if (!seconds) return '00:00';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   if (loading) {
@@ -503,7 +446,7 @@ socket.on('stream-frame', (data) => {
                         style={{ display: streamFrames[stream.streamId] ? 'none' : 'flex' }}
                       >
                         <Radio className="w-12 h-12 text-red-500 mb-2 animate-pulse" />
-                        <p className="text-white text-xs">Loading stream...</p>
+                        <p className="text-white text-xs">Waiting for stream...</p>
                       </div>
                       <div className="absolute top-3 left-3 flex items-center gap-2 z-10">
                         <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
@@ -642,8 +585,8 @@ socket.on('stream-frame', (data) => {
                   <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
                     <Radio className="w-10 h-10 text-red-500" />
                   </div>
-                  <p className="text-white text-lg font-medium">Waiting for stream...</p>
-                  <p className="text-zinc-400 text-sm mt-2">Please wait while we connect</p>
+                  <p className="text-white text-lg font-medium">Connecting to stream...</p>
+                  <p className="text-zinc-400 text-sm mt-2">Waiting for video feed</p>
                 </div>
               </div>
             </div>
