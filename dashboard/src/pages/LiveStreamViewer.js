@@ -16,6 +16,7 @@ const LiveStreamViewer = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [streamFrames, setStreamFrames] = useState({});
   const [currentStreamId, setCurrentStreamId] = useState(null);
+  const currentStreamIdRef = useRef(null);
   
   const socketRef = useRef(null);
 
@@ -98,6 +99,18 @@ const LiveStreamViewer = () => {
       socket.on('stream-frame', (data) => {
         console.log(`🎥 Frame received for ${data.streamId}, length: ${data.frame?.length}`);
         
+        if (!data.frame || data.frame.length < 100) {
+          console.warn('❌ Invalid frame received, too small or empty');
+          return;
+        }
+        
+        // Validate base64 format
+        const isValidBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(data.frame.substring(0, 100));
+        if (!isValidBase64) {
+          console.warn('❌ Frame data is not valid base64');
+          return;
+        }
+        
         setStreamFrames(prev => ({
           ...prev,
           [data.streamId]: data.frame
@@ -110,16 +123,20 @@ const LiveStreamViewer = () => {
           imgElement.style.display = 'block';
           const placeholder = document.getElementById(`placeholder-${data.streamId}`);
           if (placeholder) placeholder.style.display = 'none';
+          console.log('✅ Updated thumbnail for stream:', data.streamId);
         }
         
-        // Update modal if this is the current stream
-        if (currentStreamId === data.streamId) {
+        // Update modal if this is the current stream (use ref for current value)
+        if (currentStreamIdRef.current === data.streamId) {
           const modalImg = document.getElementById('modal-video');
           if (modalImg) {
             modalImg.src = `data:image/jpeg;base64,${data.frame}`;
             modalImg.style.display = 'block';
             const modalPlaceholder = document.getElementById('modal-placeholder');
             if (modalPlaceholder) modalPlaceholder.style.display = 'none';
+            console.log('✅ Updated modal video for stream:', data.streamId);
+          } else {
+            console.warn('❌ Modal video element not found');
           }
         }
       });
@@ -154,19 +171,39 @@ const LiveStreamViewer = () => {
     console.log(`🎬 Watching stream: ${stream.streamId}`);
     setSelectedStream(stream);
     setCurrentStreamId(stream.streamId);
+    currentStreamIdRef.current = stream.streamId;
     
     if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('join-stream', stream.streamId);
       console.log(`📡 Sent join-stream for ${stream.streamId}`);
     }
+    
+    // If we already have frames for this stream, display them immediately
+    const existingFrame = streamFrames[stream.streamId];
+    if (existingFrame) {
+      console.log('🖼️ Existing frame found for stream, will display in modal');
+      setTimeout(() => {
+        const modalImg = document.getElementById('modal-video');
+        const modalPlaceholder = document.getElementById('modal-placeholder');
+        if (modalImg) {
+          modalImg.src = `data:image/jpeg;base64,${existingFrame}`;
+          modalImg.style.display = 'block';
+          console.log('✅ Set existing frame on modal video');
+        }
+        if (modalPlaceholder) {
+          modalPlaceholder.style.display = 'none';
+        }
+      }, 200);
+    }
   };
 
   const closeStream = () => {
-    if (socketRef.current && socketRef.current.connected && currentStreamId) {
-      socketRef.current.emit('leave-stream', currentStreamId);
+    if (socketRef.current && socketRef.current.connected && currentStreamIdRef.current) {
+      socketRef.current.emit('leave-stream', currentStreamIdRef.current);
     }
     setSelectedStream(null);
     setCurrentStreamId(null);
+    currentStreamIdRef.current = null;
   };
 
   const formatTime = (dateString) => {
@@ -323,7 +360,11 @@ const LiveStreamViewer = () => {
                 style={{ display: streamFrames[selectedStream.streamId] ? 'block' : 'none' }}
                 alt="Live stream"
               />
-              <div id="modal-placeholder" className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div 
+                id="modal-placeholder" 
+                className="absolute inset-0 flex items-center justify-center"
+                style={{ display: streamFrames[selectedStream.streamId] ? 'none' : 'flex' }}
+              >
                 <div className="text-center">
                   <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
                     <Radio className="w-10 h-10 text-red-500" />

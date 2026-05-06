@@ -26,12 +26,12 @@ const io = new Server(server, {
     cors: {
         origin: [
             "http://localhost:3000",
-            "http://192.168.137.1:3000", 
+            "http://10.161.68.44:3000", 
             "http://localhost:8081",
-            "http://192.168.137.1:8081",
+            "http://10.161.68.44:8081",
             "http://10.0.2.2:8081",
             "http://localhost:5000",
-            "http://192.168.137.1:5000",
+            "http://10.161.68.44:5000",
             "*"
         ],
         methods: ["GET", "POST"],
@@ -319,9 +319,9 @@ app.set('socketio', io);
 app.use(cors({
     origin: [
         "http://localhost:3000",
-        "http://192.168.137.1:3000",
+        "http://10.161.68.44:3000",
         "http://localhost:8081",
-        "http://192.168.137.1:8081",
+        "http://10.161.68.44:8081",
         "http://10.0.2.2:8081",
         "*"
     ],

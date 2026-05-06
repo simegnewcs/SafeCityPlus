@@ -11,7 +11,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter, useFocusEffect } from 'expo-router';
 
 const { width } = Dimensions.get('window');
-const API_URL = 'http://192.168.137.1:5000';
+const API_URL = 'http://10.161.68.44:5000';
 
 // Location name mapping for common areas
 const locationNames: { [key: string]: string } = {

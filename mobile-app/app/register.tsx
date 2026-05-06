@@ -8,7 +8,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { User, Phone, Lock, ArrowRight } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_URL = 'http://192.168.137.1:5000';
+const API_URL = 'http://10.161.68.44:5000';
 
 // InputBox Component
 const InputBox = ({ icon, placeholder, secure, keyboardType, onChange }: any) => (

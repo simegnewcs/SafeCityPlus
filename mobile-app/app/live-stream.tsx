@@ -16,7 +16,7 @@ const { width, height } = Dimensions.get('window');
 
 // Server connection URLs
 const SERVER_IPS = [
-  'http://192.168.137.1:5000',
+  'http://10.161.68.44:5000',
   'http://192.168.1.100:5000',
   'http://10.0.2.2:5000',
   'http://localhost:5000',
@@ -41,6 +41,8 @@ export default function LiveStreamScreen() {
   const durationTimer = useRef<NodeJS.Timeout | null>(null);
   const frameInterval = useRef<NodeJS.Timeout | null>(null);
   const connectionAttempts = useRef(0);
+  const streamIdRef = useRef<string | null>(null);
+  const isStreamingRef = useRef(false);
   
   const router = useRouter();
 
@@ -164,7 +166,7 @@ export default function LiveStreamScreen() {
   };
 
   const restartStream = async () => {
-    if (!socketRef.current?.connected || !streamId) return;
+    if (!socketRef.current?.connected || !streamIdRef.current) return;
     
     try {
       const userData = await AsyncStorage.getItem('userData');
@@ -172,7 +174,7 @@ export default function LiveStreamScreen() {
       const isGuest = await AsyncStorage.getItem('isGuest');
       
       socketRef.current.emit('start-stream', {
-        streamId: streamId,
+        streamId: streamIdRef.current,
         cameraName: user?.fullName ? `${user.fullName}'s Stream` : (isGuest === 'true' ? 'Guest Stream' : 'Mobile Stream'),
         location: location ? `${location.coords.latitude.toFixed(6)}, ${location.coords.longitude.toFixed(6)}` : 'Unknown',
         userId: user?.id
@@ -199,7 +201,7 @@ export default function LiveStreamScreen() {
   };
 
   const captureAndSendFrame = async () => {
-    if (!cameraRef.current || !isStreaming || !socketRef.current?.connected || !streamId) {
+    if (!cameraRef.current || !isStreamingRef.current || !socketRef.current?.connected || !streamIdRef.current) {
       return;
     }
     
@@ -220,14 +222,15 @@ export default function LiveStreamScreen() {
         
         if (compressed.base64) {
           socketRef.current.emit('stream-frame', {
-            streamId: streamId,
+            streamId: streamIdRef.current,
             frame: compressed.base64,
             timestamp: Date.now()
           });
+          console.log('📡 Frame sent, size:', compressed.base64.length);
         }
       }
     } catch (error) {
-      // Silent fail - don't spam console with frame errors
+      console.error('Frame capture error:', error);
     }
   };
 
@@ -250,6 +253,7 @@ export default function LiveStreamScreen() {
     try {
       const newStreamId = `stream_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       setStreamId(newStreamId);
+      streamIdRef.current = newStreamId; // Set ref immediately for closure access
       setFrameCount(0);
       
       const userData = await AsyncStorage.getItem('userData');
@@ -264,6 +268,7 @@ export default function LiveStreamScreen() {
       });
       
       setIsStreaming(true);
+      isStreamingRef.current = true; // Set ref immediately for closure access
       setStreamDuration(0);
       setIsRecording(true);
       
@@ -296,13 +301,15 @@ export default function LiveStreamScreen() {
       frameInterval.current = null;
     }
     
-    if (socketRef.current && socketRef.current.connected && streamId) {
-      socketRef.current.emit('stop-stream', streamId);
+    if (socketRef.current && socketRef.current.connected && streamIdRef.current) {
+      socketRef.current.emit('stop-stream', streamIdRef.current);
     }
     
     setIsStreaming(false);
+    isStreamingRef.current = false;
     setIsRecording(false);
     setStreamId(null);
+    streamIdRef.current = null;
     setViewerCount(0);
     setStreamDuration(0);
     setFrameCount(0);
@@ -416,9 +423,7 @@ export default function LiveStreamScreen() {
       <CameraView
         ref={cameraRef}
         style={styles.camera}
-        facing={cameraType === 'back' ? 'back' : 'front'}
-        mode="video"
-        videoQuality="480p"
+        facing={cameraType}
       >
         <LinearGradient
           colors={['rgba(0,0,0,0.7)', 'transparent']}

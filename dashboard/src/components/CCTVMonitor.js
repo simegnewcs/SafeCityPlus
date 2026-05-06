@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const API_URL = 'http://192.168.137.1:5000/api';
+const API_URL = 'http://10.161.68.44:5000/api';
 
 const CCTVMonitor = () => {
   const [cameras, setCameras] = useState([]);

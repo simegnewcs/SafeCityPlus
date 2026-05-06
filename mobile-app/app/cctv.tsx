@@ -10,7 +10,7 @@ import { Video, ResizeMode } from 'expo-av';
 import { useRouter } from 'expo-router';
 
 const { width, height } = Dimensions.get('window');
-const API_URL = 'http://192.168.137.1:5000';
+const API_URL = 'http://10.161.68.44:5000';
 
 interface Camera {
   id: number;

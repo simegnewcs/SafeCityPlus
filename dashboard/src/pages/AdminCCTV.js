@@ -32,6 +32,7 @@ const AdminCCTV = () => {
   const [showStreamModal, setShowStreamModal] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [streamFrames, setStreamFrames] = useState({});
+  const selectedStreamRef = useRef(null);
   
   const socketRef = useRef(null);
 
@@ -120,28 +121,47 @@ const AdminCCTV = () => {
       socket.on('stream-frame', (data) => {
         console.log('📡 Received frame for stream:', data.streamId, 'size:', data.frame?.length);
         
+        if (!data.frame || data.frame.length < 100) {
+          console.warn('❌ Invalid frame received, too small or empty');
+          return;
+        }
+        
+        // Validate base64 format
+        const isValidBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(data.frame.substring(0, 100));
+        if (!isValidBase64) {
+          console.warn('❌ Frame data is not valid base64');
+          return;
+        }
+        
         setStreamFrames(prev => ({
           ...prev,
           [data.streamId]: data.frame
         }));
         
+        // Build data URL with cache buster
+        const dataUrl = `data:image/jpeg;base64,${data.frame}`;
+        
         // Update thumbnail in list
         const videoElement = document.getElementById(`video-${data.streamId}`);
         if (videoElement) {
-          videoElement.src = `data:image/jpeg;base64,${data.frame}`;
+          videoElement.src = dataUrl;
           videoElement.style.display = 'block';
           const placeholder = document.getElementById(`placeholder-${data.streamId}`);
           if (placeholder) placeholder.style.display = 'none';
+          console.log('✅ Updated thumbnail for stream:', data.streamId);
         }
         
-        // Update modal video if this is the selected stream
-        if (selectedStream?.streamId === data.streamId) {
+        // Update modal video if this is the selected stream (use ref for current value)
+        if (selectedStreamRef.current?.streamId === data.streamId) {
           const modalVideo = document.getElementById('modal-video');
           if (modalVideo) {
-            modalVideo.src = `data:image/jpeg;base64,${data.frame}`;
+            modalVideo.src = dataUrl;
             modalVideo.style.display = 'block';
             const modalPlaceholder = document.getElementById('modal-placeholder');
             if (modalPlaceholder) modalPlaceholder.style.display = 'none';
+            console.log('✅ Updated modal video for stream:', data.streamId);
+          } else {
+            console.warn('❌ Modal video element not found');
           }
         }
       });
@@ -245,20 +265,41 @@ const AdminCCTV = () => {
 
   const watchLiveStream = (stream) => {
     setSelectedStream(stream);
+    selectedStreamRef.current = stream;
     setShowStreamModal(true);
     
     if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('join-stream', stream.streamId);
       console.log('📡 Joined stream:', stream.streamId);
     }
+    
+    // If we already have frames for this stream, set them on the modal when it opens
+    const existingFrame = streamFrames[stream.streamId];
+    if (existingFrame) {
+      console.log('🖼️ Existing frame found for stream, will display in modal');
+      // Use a longer timeout to ensure DOM is ready after React renders the modal
+      setTimeout(() => {
+        const modalVideo = document.getElementById('modal-video');
+        const modalPlaceholder = document.getElementById('modal-placeholder');
+        if (modalVideo) {
+          modalVideo.src = `data:image/jpeg;base64,${existingFrame}`;
+          modalVideo.style.display = 'block';
+          console.log('✅ Set existing frame on modal video');
+        }
+        if (modalPlaceholder) {
+          modalPlaceholder.style.display = 'none';
+        }
+      }, 200);
+    }
   };
 
   const closeStreamModal = () => {
-    if (selectedStream && socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('leave-stream', selectedStream.streamId);
+    if (selectedStreamRef.current && socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('leave-stream', selectedStreamRef.current.streamId);
     }
     setShowStreamModal(false);
     setSelectedStream(null);
+    selectedStreamRef.current = null;
   };
 
   const getStatusColor = (status) => {
@@ -577,10 +618,14 @@ const AdminCCTV = () => {
               <img
                 id="modal-video"
                 className="w-full h-full object-contain"
-                style={{ display: 'block' }}
+                style={{ display: streamFrames[selectedStream.streamId] ? 'block' : 'none' }}
                 alt="Live stream"
               />
-              <div id="modal-placeholder" className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div 
+                id="modal-placeholder" 
+                className="absolute inset-0 flex items-center justify-center"
+                style={{ display: streamFrames[selectedStream.streamId] ? 'none' : 'flex' }}
+              >
                 <div className="text-center">
                   <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
                     <Radio className="w-10 h-10 text-red-500" />

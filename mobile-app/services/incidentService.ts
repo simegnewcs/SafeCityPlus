@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
 const getBaseUrl = () => {
-    const IP = '192.168.137.1';
+    const IP = '10.161.68.44';
     const PORT = '5000';
     
     if (Platform.OS === 'android') {

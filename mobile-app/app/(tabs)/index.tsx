@@ -11,7 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width, height } = Dimensions.get('window');
-const API_URL = 'http://192.168.137.1:5000';
+const API_URL = 'http://10.161.68.44:5000';
 
 export default function HomeScreen() {
   const [userName, setUserName] = useState('Citizen');

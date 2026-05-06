@@ -88,7 +88,7 @@ export default function ProfileScreen() {
 
   const loadUserStats = async (userId: number) => {
     try {
-      const response = await fetch(`http://192.168.137.1:5000/api/incidents/user/${userId}`);
+      const response = await fetch(`http://10.161.68.44:5000/api/incidents/user/${userId}`);
       if (response.ok) {
         const incidents = await response.json();
         const total = incidents.length;

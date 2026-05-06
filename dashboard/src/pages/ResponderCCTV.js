@@ -33,6 +33,7 @@ const AdminCCTV = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [streamFrames, setStreamFrames] = useState({});
   const [streamInitialized, setStreamInitialized] = useState({});
+  const selectedStreamRef = useRef(null);
   
   const socketRef = useRef(null);
 
@@ -145,10 +146,13 @@ socket.on('stream-frame', (data) => {
     [data.streamId]: data.frame
   }));
   
-  if (!streamInitialized[data.streamId]) {
-    setStreamInitialized(prev => ({ ...prev, [data.streamId]: true }));
-    console.log('🎬 Stream initialized:', data.streamId);
-  }
+  setStreamInitialized(prev => {
+    if (!prev[data.streamId]) {
+      console.log('🎬 Stream initialized:', data.streamId);
+      return { ...prev, [data.streamId]: true };
+    }
+    return prev;
+  });
   
   // Update the video element directly
   const videoElement = document.getElementById(`video-${data.streamId}`);
@@ -168,8 +172,8 @@ socket.on('stream-frame', (data) => {
     console.warn('Video element not found for stream:', data.streamId);
   }
   
-  // Also update modal video if it's the selected stream
-  if (selectedStream?.streamId === data.streamId) {
+  // Also update modal video if it's the selected stream (use ref for current value)
+  if (selectedStreamRef.current?.streamId === data.streamId) {
     const modalVideo = document.getElementById('modal-video');
     if (modalVideo) {
       modalVideo.src = `data:image/jpeg;base64,${data.frame}`;
@@ -281,6 +285,7 @@ socket.on('stream-frame', (data) => {
 
   const watchLiveStream = (stream) => {
     setSelectedStream(stream);
+    selectedStreamRef.current = stream;
     setShowStreamModal(true);
     
     // Join the stream via Socket.IO
@@ -288,7 +293,7 @@ socket.on('stream-frame', (data) => {
       socketRef.current.emit('join-stream', stream.streamId);
     }
     
-    // Reset modal video state
+    // Reset modal video state and display existing frames if available
     setTimeout(() => {
       const modalVideo = document.getElementById('modal-video');
       if (modalVideo && streamFrames[stream.streamId]) {
@@ -304,11 +309,12 @@ socket.on('stream-frame', (data) => {
 
   // Add this to leave stream when modal closes
   const closeStreamModal = () => {
-    if (selectedStream && socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('leave-stream', selectedStream.streamId);
+    if (selectedStreamRef.current && socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('leave-stream', selectedStreamRef.current.streamId);
     }
     setShowStreamModal(false);
     setSelectedStream(null);
+    selectedStreamRef.current = null;
   };
 
   const getStatusColor = (status) => {
@@ -634,10 +640,14 @@ socket.on('stream-frame', (data) => {
               <img
                 id="modal-video"
                 className="w-full h-full object-contain"
-                style={{ display: 'block' }}
+                style={{ display: streamFrames[selectedStream.streamId] ? 'block' : 'none' }}
                 alt="Live stream"
               />
-              <div id="modal-placeholder" className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div 
+                id="modal-placeholder" 
+                className="absolute inset-0 flex items-center justify-center"
+                style={{ display: streamFrames[selectedStream.streamId] ? 'none' : 'flex' }}
+              >
                 <div className="text-center">
                   <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
                     <Radio className="w-10 h-10 text-red-500" />
