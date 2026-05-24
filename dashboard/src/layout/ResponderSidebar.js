@@ -48,14 +48,14 @@ const ResponderSidebar = ({ activeTab, setActiveTab, user }) => {
       {/* Header */}
       <div className="p-6 border-b border-blue-100 bg-blue-100 flex items-center justify-between">
         <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-full overflow-hidden flex items-center justify-center bg-blue-200 border-2 border-blue-400 flex-shrink-0">
+            <img src="/safecityplus.png" alt="SafeCity+" className="w-full h-full object-cover" />
+          </div>
           {!isCollapsed && (
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-blue-900">Responder</h1>
               <p className="text-xs text-blue-700 -mt-1">Field Operations</p>
             </div>
-          )}
-          {isCollapsed && (
-            <span className="text-2xl font-bold text-blue-600" aria-hidden="true">R</span>
           )}
         </div>
 

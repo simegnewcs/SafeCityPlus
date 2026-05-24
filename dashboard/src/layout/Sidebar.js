@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, History, Settings, ShieldAlert, LogOut } from 'lucide-react';
+import { LayoutDashboard, History, Settings, LogOut } from 'lucide-react';
 
 const Sidebar = ({ activeTab, setActiveTab }) => {
   const menus = [
@@ -11,8 +11,8 @@ const Sidebar = ({ activeTab, setActiveTab }) => {
   return (
     <div className="w-64 bg-[#0f172a] h-screen text-slate-300 p-6 fixed left-0 top-0 shadow-2xl z-50 flex flex-col">
       <div className="mb-12 flex items-center gap-3 px-2">
-        <div className="bg-blue-600 p-2 rounded-lg shadow-lg shadow-blue-500/30">
-          <ShieldAlert size={24} className="text-white" />
+        <div className="w-10 h-10 rounded-full overflow-hidden flex items-center justify-center bg-white/10 border-2 border-white/20">
+          <img src="/safecityplus.png" alt="SafeCity+" className="w-full h-full object-cover" />
         </div>
         <div>
           <h2 className="text-xl font-black text-white tracking-tight">SafeCity+</h2>

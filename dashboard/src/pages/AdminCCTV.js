@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
-import { 
-  Play, Volume2, Maximize2, RefreshCw, Settings, Camera, 
-  AlertTriangle, Eye, Video, Radio, Wifi, WifiOff, X, 
-  Circle, Users, MapPin
+import {
+  Play, Maximize2, RefreshCw, Camera,
+  AlertTriangle, Eye, Radio, WifiOff, X,
+  Circle, MapPin, Cpu, Zap, Shield, Activity,
+  TrendingUp, Clock, ChevronDown, ChevronUp, Download,
+  AlertCircle, CheckCircle, Crosshair, BarChart2
 } from "lucide-react";
 import axios from "axios";
 import io from 'socket.io-client';
@@ -11,20 +13,273 @@ import io from 'socket.io-client';
 const API_URL = "http://localhost:5000/api";
 const SOCKET_URL = "http://localhost:5000";
 
+// ── Helper components ─────────────────────────────────────────────────────────
+
+const SeverityBadge = ({ severity }) => {
+  const map = {
+    'Critical Emergency': 'bg-red-500/20 text-red-300 border border-red-500/40',
+    'Medium Risk':        'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40',
+    'Low Risk':           'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40',
+  };
+  return (
+    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${map[severity] || map['Low Risk']}`}>
+      {severity}
+    </span>
+  );
+};
+
+const ConfidenceBar = ({ value }) => {
+  const color = value >= 70 ? 'bg-red-500' : value >= 45 ? 'bg-yellow-400' : 'bg-emerald-400';
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${value}%` }} />
+      </div>
+      <span className="text-[11px] font-mono text-white/70 w-8 text-right">{value}%</span>
+    </div>
+  );
+};
+
+// ── Stream Location Map with Routing ─────────────────────────────────────────
+const StreamLocationMap = ({ locationStr }) => {
+  const [incidentCoords, setIncidentCoords] = React.useState(null);
+  const [userCoords,     setUserCoords]     = React.useState(null);
+  const [address,        setAddress]        = React.useState(null);
+  const [route,          setRoute]          = React.useState(null); // { distance, duration, geometry }
+  const [routeError,     setRouteError]     = React.useState(null);
+  const [loadingRoute,   setLoadingRoute]   = React.useState(false);
+  const [iframeSrc,      setIframeSrc]      = React.useState(null);
+  const blobUrlRef = React.useRef(null);
+
+  // Parse incident coords from location string
+  React.useEffect(() => {
+    if (!locationStr || locationStr === 'Unknown') return;
+    const parts = locationStr.split(',').map(s => parseFloat(s.trim()));
+    if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return;
+    // Sanity check: valid lat/lng ranges
+    const [lat, lng] = parts;
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
+    setIncidentCoords({ lat, lng });
+
+    fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`, {
+      headers: { 'Accept-Language': 'en' }
+    })
+      .then(r => r.json())
+      .then(data => {
+        const a = data.address || {};
+        const place = [a.road || a.pedestrian, a.suburb || a.neighbourhood, a.city || a.town || a.village, a.country]
+          .filter(Boolean).join(', ');
+        setAddress(place || data.display_name || locationStr);
+      })
+      .catch(() => setAddress(locationStr));
+  }, [locationStr]);
+
+  // Get user's current location
+  React.useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      pos => setUserCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => setUserCoords(null)
+    );
+  }, []);
+
+  // Fetch driving route via OSRM (free, no API key)
+  React.useEffect(() => {
+    if (!incidentCoords || !userCoords) return;
+    setLoadingRoute(true);
+    setRouteError(null);
+    const { lat: iLat, lng: iLng } = incidentCoords;
+    const { lat: uLat, lng: uLng } = userCoords;
+    // OSRM public API: driving route with full geometry
+    fetch(`https://router.project-osrm.org/route/v1/driving/${uLng},${uLat};${iLng},${iLat}?overview=full&geometries=geojson`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.code !== 'Ok' || !data.routes?.length) throw new Error('No route found');
+        const r0 = data.routes[0];
+        setRoute({
+          distance: r0.distance,   // metres
+          duration: r0.duration,   // seconds
+          geometry: r0.geometry,   // GeoJSON LineString
+        });
+        setLoadingRoute(false);
+      })
+      .catch(e => { setRouteError(e.message); setLoadingRoute(false); });
+  }, [incidentCoords, userCoords]);
+
+  // Build Leaflet HTML blob and inject into iframe whenever route changes
+  React.useEffect(() => {
+    if (!incidentCoords) return;
+    const { lat: iLat, lng: iLng } = incidentCoords;
+    const uLat = userCoords?.lat;
+    const uLng = userCoords?.lng;
+    const hasRoute = route && uLat != null;
+
+    // Centre map between both points, or on incident if no user location
+    const cLat = hasRoute ? (iLat + uLat) / 2 : iLat;
+    const cLng = hasRoute ? (iLng + uLng) / 2 : iLng;
+    const zoom  = hasRoute ? 13 : 16;
+
+    const routeCoords = hasRoute
+      ? JSON.stringify(route.geometry.coordinates.map(([ln, la]) => [la, ln]))
+      : '[]';
+
+    const html = `<!DOCTYPE html><html><head>
+<meta charset="utf-8"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
+<style>html,body,#map{margin:0;padding:0;width:100%;height:100%;background:#0f172a}</style>
+</head><body>
+<div id="map"></div>
+<script>
+  var map = L.map('map',{zoomControl:true,attributionControl:false}).setView([${cLat},${cLng}],${zoom});
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+
+  // Incident marker (red)
+  var redIcon = L.divIcon({className:'',html:'<div style="width:14px;height:14px;background:#ef4444;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #ef4444"></div>',iconAnchor:[7,7]});
+  L.marker([${iLat},${iLng}],{icon:redIcon}).addTo(map).bindPopup('<b>📍 Incident Location</b>').openPopup();
+
+  ${uLat != null ? `
+  // Responder marker (blue)
+  var blueIcon = L.divIcon({className:'',html:'<div style="width:12px;height:12px;background:#60a5fa;border:2px solid #fff;border-radius:50%;box-shadow:0 0 6px #60a5fa"></div>',iconAnchor:[6,6]});
+  L.marker([${uLat},${uLng}],{icon:blueIcon}).addTo(map).bindPopup('<b>🚓 Your Location</b>');
+  ` : ''}
+
+  ${hasRoute ? `
+  // Route polyline
+  var coords = ${routeCoords};
+  L.polyline(coords,{color:'#f59e0b',weight:4,opacity:0.9,dashArray:'8,4'}).addTo(map);
+  map.fitBounds(L.polyline(coords).getBounds(),{padding:[20,20]});
+  ` : ''}
+<\/script>
+</body></html>`;
+
+    // Revoke previous blob URL to avoid memory leak
+    if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    const blob = new Blob([html], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    blobUrlRef.current = url;
+    setIframeSrc(url);
+  }, [incidentCoords, userCoords, route]);
+
+  // Cleanup blob on unmount
+  React.useEffect(() => () => { if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current); }, []);
+
+  if (!incidentCoords) {
+    return (
+      <div className="bg-slate-800 rounded-xl border border-slate-700 p-3 flex items-center gap-2">
+        <MapPin size={12} className="text-slate-500" />
+        <span className="text-[11px] text-slate-400">{locationStr || 'No location data'}</span>
+      </div>
+    );
+  }
+
+  const { lat: iLat, lng: iLng } = incidentCoords;
+  const osmLink = `https://www.openstreetmap.org/?mlat=${iLat}&mlon=${iLng}#map=16/${iLat}/${iLng}`;
+
+  const fmtDist = (m) => m >= 1000 ? `${(m/1000).toFixed(1)} km` : `${Math.round(m)} m`;
+  const fmtTime = (s) => {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m} min`;
+  };
+
+  return (
+    <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+      {/* Header */}
+      <div className="px-3 py-2 border-b border-slate-700 flex items-center gap-1.5">
+        <MapPin size={11} className="text-emerald-400" />
+        <span className="text-[10px] font-bold text-slate-300">Incident Location & Route</span>
+        <a href={osmLink} target="_blank" rel="noreferrer"
+          className="ml-auto text-[9px] text-indigo-400 hover:text-indigo-300 transition-colors">
+          Open ↗
+        </a>
+      </div>
+
+      {/* Leaflet map iframe */}
+      {iframeSrc && (
+        <iframe
+          title="stream-location"
+          src={iframeSrc}
+          width="100%" height="200"
+          style={{ border: 0, display: 'block' }}
+          sandbox="allow-scripts allow-same-origin"
+        />
+      )}
+
+      {/* Route stats */}
+      <div className="px-3 py-2.5 space-y-2">
+        {/* Coords + address */}
+        <div>
+          <span className="text-[9px] font-mono text-emerald-400">{iLat.toFixed(5)}, {iLng.toFixed(5)}</span>
+          {address && <p className="text-[10px] text-slate-300 leading-tight mt-0.5">{address}</p>}
+        </div>
+
+        {/* Driving stats row */}
+        {loadingRoute && (
+          <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
+            <div className="w-3 h-3 border border-yellow-500 border-t-transparent rounded-full animate-spin" />
+            Calculating fastest route...
+          </div>
+        )}
+
+        {!loadingRoute && !userCoords && (
+          <p className="text-[10px] text-slate-500">Enable browser location to see route</p>
+        )}
+
+        {route && !loadingRoute && (
+          <div className="grid grid-cols-2 gap-2">
+            <div className="bg-slate-700/60 rounded-lg px-2.5 py-2 border border-slate-600/50">
+              <div className="flex items-center gap-1 mb-0.5">
+                <span className="text-yellow-400 text-[10px]">🚗</span>
+                <span className="text-[9px] text-slate-400 uppercase font-bold">Distance</span>
+              </div>
+              <p className="text-sm font-bold text-white">{fmtDist(route.distance)}</p>
+            </div>
+            <div className="bg-slate-700/60 rounded-lg px-2.5 py-2 border border-slate-600/50">
+              <div className="flex items-center gap-1 mb-0.5">
+                <span className="text-yellow-400 text-[10px]">⏱</span>
+                <span className="text-[9px] text-slate-400 uppercase font-bold">Drive Time</span>
+              </div>
+              <p className="text-sm font-bold text-white">{fmtTime(route.duration)}</p>
+            </div>
+          </div>
+        )}
+
+        {route && !loadingRoute && (
+          <div className="flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-2.5 py-1.5">
+            <span className="text-yellow-400 text-xs">⚡</span>
+            <span className="text-[10px] text-yellow-300 font-semibold">Fastest route by car</span>
+            <span className="ml-auto text-[9px] text-yellow-400 font-mono">{fmtDist(route.distance)} · {fmtTime(route.duration)}</span>
+          </div>
+        )}
+
+        {routeError && (
+          <p className="text-[10px] text-red-400">Route unavailable: {routeError}</p>
+        )}
+
+        {/* Legend */}
+        <div className="flex items-center gap-3 text-[9px] text-slate-500">
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Incident</span>
+          {userCoords && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400 inline-block" /> Your Position</span>}
+          {route && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-dashed border-yellow-400" /> Route</span>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Main Component ────────────────────────────────────────────────────────────
+
 const AdminCCTV = () => {
   const user = JSON.parse(localStorage.getItem("user") || "{}");
+
+  // Core state
   const [cameras, setCameras] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showModal, setShowModal] = useState(false);
-  const [stats, setStats] = useState({
-    total: 0,
-    active: 0,
-    offline: 0,
-    viewers: 0,
-    liveStreams: 0
-  });
+  const [stats, setStats] = useState({ total: 0, active: 0, offline: 0, viewers: 0, liveStreams: 0 });
   const [alerts, setAlerts] = useState([]);
   const [showAlerts, setShowAlerts] = useState(false);
   const [liveStreams, setLiveStreams] = useState([]);
@@ -32,9 +287,134 @@ const AdminCCTV = () => {
   const [showStreamModal, setShowStreamModal] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [streamFrames, setStreamFrames] = useState({});
+
+  // AI Detection state
+  const [aiEnabled, setAiEnabled] = useState(true);
+  const [aiStatus, setAiStatus] = useState('idle'); // idle | active | alert
+  const [aiServiceOnline, setAiServiceOnline] = useState(false);
+  const [currentDetection, setCurrentDetection] = useState(null);   // latest ai-detection payload
+  const [aiEventTimeline, setAiEventTimeline] = useState([]);        // last 30 events
+  const [aiAlerts, setAiAlerts] = useState([]);                      // alert-level events only
+  const [showAiPanel, setShowAiPanel] = useState(true);
+  const [showTimeline, setShowTimeline] = useState(true);
+  const [aiFrameCounter, setAiFrameCounter] = useState(0);
+  const aiAnalyzeIntervalRef = useRef(null);
+
   const selectedStreamRef = useRef(null);
-  
   const socketRef = useRef(null);
+  const modalCanvasRef = useRef(null);
+  const currentDetectionRef = useRef(null); // always-current bbox data for canvas draw
+
+  // Draggable panel divider
+  const [aiPanelWidth, setAiPanelWidth] = useState(288); // default 288px (lg:w-72)
+  const isDraggingRef = useRef(false);
+  const dragStartXRef = useRef(0);
+  const dragStartWidthRef = useRef(288);
+  const modalRowRef = useRef(null);
+
+  const onDividerMouseDown = (e) => {
+    e.preventDefault();
+    isDraggingRef.current = true;
+    dragStartXRef.current = e.clientX;
+    dragStartWidthRef.current = aiPanelWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  useEffect(() => {
+    const onMouseMove = (e) => {
+      if (!isDraggingRef.current) return;
+      const delta = dragStartXRef.current - e.clientX; // drag left = wider AI panel
+      const newW = Math.min(560, Math.max(200, dragStartWidthRef.current + delta));
+      setAiPanelWidth(newW);
+    };
+    const onMouseUp = () => {
+      if (!isDraggingRef.current) return;
+      isDraggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
+  // Label colour map matching mobile overlay
+  const LABEL_COLORS = {
+    person:'#facc15', car:'#60a5fa', truck:'#f87171', bus:'#f97316',
+    motorcycle:'#a78bfa', bicycle:'#34d399', chair:'#fb7185', table:'#38bdf8',
+    bottle:'#a3e635', phone:'#e879f9', laptop:'#fbbf24', dog:'#4ade80',
+    cat:'#22d3ee', accident:'#ef4444', fire:'#ef4444',
+  };
+  const getLabelColor = (label) => LABEL_COLORS[label?.toLowerCase()] ?? '#facc15';
+
+  // Draw a JPEG frame onto the modal canvas, then overlay bounding boxes
+  const drawFrameOnCanvas = useCallback((base64Frame, detection) => {
+    const canvas = modalCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const img = new Image();
+    img.onload = () => {
+      canvas.width  = img.naturalWidth  || canvas.offsetWidth  || 640;
+      canvas.height = img.naturalHeight || canvas.offsetHeight || 360;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      // Draw bounding boxes
+      const boxes = detection?.detections || [];
+      boxes.forEach(box => {
+        if (!box.w || !box.h) return;
+        const x = box.x * canvas.width;
+        const y = box.y * canvas.height;
+        const w = box.w * canvas.width;
+        const h = box.h * canvas.height;
+        const color = getLabelColor(box.label);
+        const label = `${(box.label || 'obj').toUpperCase()} ${Math.round((box.confidence||0)*100)}%`;
+
+        // Box
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+
+        // Corner accents (L-shapes)
+        const cs = 12;
+        ctx.lineWidth = 3;
+        [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]].forEach(([cx,cy,dx,dy]) => {
+          ctx.beginPath(); ctx.moveTo(cx+dx*cs,cy); ctx.lineTo(cx,cy); ctx.lineTo(cx,cy+dy*cs); ctx.stroke();
+        });
+
+        // Label chip
+        ctx.font = 'bold 11px monospace';
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y - 18, tw + 10, 18);
+        ctx.fillStyle = '#000';
+        ctx.fillText(label, x + 5, y - 4);
+      });
+
+      // Scan-line overlay
+      ctx.fillStyle = 'rgba(0,0,0,0.04)';
+      for (let i = 0; i < canvas.height; i += 4) {
+        ctx.fillRect(0, i, canvas.width, 2);
+      }
+    };
+    img.src = `data:image/jpeg;base64,${base64Frame}`;
+  }, []);
+
+  // Check AI service health on mount
+  useEffect(() => {
+    const checkAI = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/ai/health`, { timeout: 3000 });
+        setAiServiceOnline(res.data?.status === 'healthy');
+      } catch { setAiServiceOnline(false); }
+    };
+    checkAI();
+    const aiHealthInterval = setInterval(checkAI, 15000);
+    return () => clearInterval(aiHealthInterval);
+  }, []);
 
   useEffect(() => {
     fetchCameras();
@@ -50,18 +430,30 @@ const AdminCCTV = () => {
     
     return () => {
       clearInterval(interval);
+      if (aiAnalyzeIntervalRef.current) clearInterval(aiAnalyzeIntervalRef.current);
       if (socketRef.current) socketRef.current.disconnect();
     };
   }, []);
 
   const connectSocket = () => {
     try {
+      // Get user token from localStorage
+      const userData = JSON.parse(localStorage.getItem('user') || '{}');
+      const authToken = userData?.id ? String(userData.id) : null;
+      
+      if (authToken) {
+        console.log('🔐 Authenticating socket with user ID:', authToken);
+      }
+      
       const socket = io(SOCKET_URL, {
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: 5,
         reconnectionDelay: 3000,
-        timeout: 10000
+        timeout: 10000,
+        auth: {
+          token: authToken
+        }
       });
       
       socket.on('connect', () => {
@@ -119,57 +511,82 @@ const AdminCCTV = () => {
       });
       
       socket.on('stream-frame', (data) => {
-        console.log('📡 Received frame for stream:', data.streamId, 'size:', data.frame?.length);
-        
-        if (!data.frame || data.frame.length < 100) {
-          console.warn('❌ Invalid frame received, too small or empty');
-          return;
-        }
-        
-        // Validate base64 format
+        if (!data.frame || data.frame.length < 100) return;
         const isValidBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(data.frame.substring(0, 100));
-        if (!isValidBase64) {
-          console.warn('❌ Frame data is not valid base64');
-          return;
-        }
-        
-        setStreamFrames(prev => ({
-          ...prev,
-          [data.streamId]: data.frame
-        }));
-        
-        // Build data URL with cache buster
-        const dataUrl = `data:image/jpeg;base64,${data.frame}`;
-        
-        // Update thumbnail in list
-        const videoElement = document.getElementById(`video-${data.streamId}`);
-        if (videoElement) {
-          videoElement.src = dataUrl;
-          videoElement.style.display = 'block';
-          const placeholder = document.getElementById(`placeholder-${data.streamId}`);
-          if (placeholder) placeholder.style.display = 'none';
-          console.log('✅ Updated thumbnail for stream:', data.streamId);
-        }
-        
-        // Update modal video if this is the selected stream (use ref for current value)
+        if (!isValidBase64) return;
+
+        setStreamFrames(prev => ({ ...prev, [data.streamId]: data.frame }));
+
+        // Trigger AI analysis for watched stream (backend throttles to 1.5s)
         if (selectedStreamRef.current?.streamId === data.streamId) {
-          const modalVideo = document.getElementById('modal-video');
-          if (modalVideo) {
-            modalVideo.src = dataUrl;
-            modalVideo.style.display = 'block';
-            const modalPlaceholder = document.getElementById('modal-placeholder');
-            if (modalPlaceholder) modalPlaceholder.style.display = 'none';
-            console.log('✅ Updated modal video for stream:', data.streamId);
-          } else {
-            console.warn('❌ Modal video element not found');
-          }
+          socket.emit('ai-analyze-frame', { streamId: data.streamId, frame: data.frame });
+        }
+
+        // Update thumbnail card (small img is fine for thumbnails)
+        const thumbEl = document.getElementById(`video-${data.streamId}`);
+        if (thumbEl) {
+          thumbEl.src = `data:image/jpeg;base64,${data.frame}`;
+          thumbEl.style.display = 'block';
+          const ph = document.getElementById(`placeholder-${data.streamId}`);
+          if (ph) ph.style.display = 'none';
+        }
+
+        // Draw frame + bounding boxes on modal canvas
+        if (selectedStreamRef.current?.streamId === data.streamId) {
+          drawFrameOnCanvas(data.frame, currentDetectionRef.current);
         }
       });
       
+      // ── AI Detection Events ──────────────────────────────────
+      socket.on('ai-detection', (data) => {
+        if (!aiEnabled) return;
+        currentDetectionRef.current = data; // keep ref in sync for canvas draw
+        setCurrentDetection(data);
+        setAiFrameCounter(c => c + 1);
+        setAiStatus(data.isAlert ? 'alert' : 'active');
+        setAiEventTimeline(prev => [data, ...prev].slice(0, 30));
+      });
+
+      socket.on('ai-alert', (data) => {
+        setAiAlerts(prev => [data, ...prev].slice(0, 10));
+        setAiStatus('alert');
+        // Auto-clear alert badge after 8s
+        setTimeout(() => setAiStatus(prev => prev === 'alert' ? 'active' : prev), 8000);
+      });
+
       socketRef.current = socket;
     } catch (error) {
       console.error('Socket.IO connection error:', error);
     }
+  };
+
+  // Send frame to backend for AI analysis (throttled by backend)
+  const triggerAIAnalysis = useCallback((streamId, frame) => {
+    if (!aiEnabled || !socketRef.current?.connected || !frame) return;
+    socketRef.current.emit('ai-analyze-frame', { streamId, frame });
+  }, [aiEnabled]);
+
+  // Start periodic AI analysis when stream modal opens
+  const startAIAnalysis = useCallback((streamId) => {
+    if (aiAnalyzeIntervalRef.current) clearInterval(aiAnalyzeIntervalRef.current);
+    setAiStatus('active');
+    aiAnalyzeIntervalRef.current = setInterval(() => {
+      const frame = streamId ? document.getElementById('modal-video')?.src : null;
+      // Prefer raw base64 from streamFrames state
+    }, 2000);
+  }, []);
+
+  const stopAIAnalysis = useCallback(() => {
+    if (aiAnalyzeIntervalRef.current) clearInterval(aiAnalyzeIntervalRef.current);
+    setAiStatus('idle');
+  }, []);
+
+  const exportAIEvents = () => {
+    const blob = new Blob([JSON.stringify(aiEventTimeline, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url;
+    a.download = `ai-events-${Date.now()}.json`; a.click();
+    URL.revokeObjectURL(url);
   };
 
   const addAlert = (message) => {
@@ -267,28 +684,22 @@ const AdminCCTV = () => {
     setSelectedStream(stream);
     selectedStreamRef.current = stream;
     setShowStreamModal(true);
-    
+    setCurrentDetection(null);
+    setAiStatus(aiEnabled ? 'active' : 'idle');
+
     if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('join-stream', stream.streamId);
-      console.log('📡 Joined stream:', stream.streamId);
     }
-    
-    // If we already have frames for this stream, set them on the modal when it opens
+
     const existingFrame = streamFrames[stream.streamId];
     if (existingFrame) {
-      console.log('🖼️ Existing frame found for stream, will display in modal');
-      // Use a longer timeout to ensure DOM is ready after React renders the modal
       setTimeout(() => {
         const modalVideo = document.getElementById('modal-video');
         const modalPlaceholder = document.getElementById('modal-placeholder');
-        if (modalVideo) {
-          modalVideo.src = `data:image/jpeg;base64,${existingFrame}`;
-          modalVideo.style.display = 'block';
-          console.log('✅ Set existing frame on modal video');
-        }
-        if (modalPlaceholder) {
-          modalPlaceholder.style.display = 'none';
-        }
+        if (modalVideo) { modalVideo.src = `data:image/jpeg;base64,${existingFrame}`; modalVideo.style.display = 'block'; }
+        if (modalPlaceholder) modalPlaceholder.style.display = 'none';
+        // Immediately kick off first AI analysis on existing frame
+        if (aiEnabled) socketRef.current?.emit('ai-analyze-frame', { streamId: stream.streamId, frame: existingFrame });
       }, 200);
     }
   };
@@ -297,9 +708,11 @@ const AdminCCTV = () => {
     if (selectedStreamRef.current && socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('leave-stream', selectedStreamRef.current.streamId);
     }
+    stopAIAnalysis();
     setShowStreamModal(false);
     setSelectedStream(null);
     selectedStreamRef.current = null;
+    setCurrentDetection(null);
   };
 
   const getStatusColor = (status) => {
@@ -330,12 +743,17 @@ const AdminCCTV = () => {
 
   if (loading) {
     return (
-      <div className="flex h-screen bg-zinc-50">
+      <div className="flex h-screen bg-slate-900">
         <AdminSidebar user={user} />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-zinc-600">Loading CCTV feeds...</p>
+            <div className="relative w-16 h-16 mx-auto mb-5">
+              <div className="w-16 h-16 border-4 border-yellow-500/30 rounded-full"></div>
+              <div className="absolute inset-0 border-4 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
+              <Cpu className="absolute inset-0 m-auto w-6 h-6 text-yellow-400" />
+            </div>
+            <p className="text-white font-semibold text-lg">AI Engine Initializing</p>
+            <p className="text-slate-400 text-sm mt-1">Loading CCTV feeds…</p>
           </div>
         </div>
       </div>
@@ -344,333 +762,656 @@ const AdminCCTV = () => {
 
   const unreadAlerts = alerts.filter(a => !a.is_viewed).length;
   const activeLiveStreams = liveStreams.length;
+  const aiStatusColor = aiStatus === 'alert' ? 'text-red-400 border-red-500/50 bg-red-500/10'
+    : aiStatus === 'active' ? 'text-yellow-400 border-yellow-500/50 bg-yellow-500/10'
+    : 'text-slate-400 border-slate-600 bg-slate-800';
 
   return (
-    <div className="flex h-screen bg-zinc-50 text-zinc-900 overflow-hidden">
+    <div className="flex h-screen bg-slate-900 text-white overflow-hidden">
       <AdminSidebar user={user} />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-16 bg-white border-b border-zinc-200 px-8 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-4">
-            <div className="relative">
-              <Camera className="w-7 h-7 text-emerald-600" />
-              {activeLiveStreams > 0 && (
-                <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-              )}
+
+        {/* ── Top Header ─────────────────────────────────────────────── */}
+        <header className="h-14 bg-slate-900/95 border-b border-slate-700/60 px-5 flex items-center justify-between flex-shrink-0 backdrop-blur">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-yellow-400 to-orange-500 flex items-center justify-center shadow">
+              <Camera size={15} className="text-black" />
             </div>
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">CCTV Surveillance</h1>
-              <p className="text-sm text-zinc-500">Live monitoring & incident detection</p>
+              <h1 className="text-sm font-bold text-white leading-none">CCTV Surveillance</h1>
+              <p className="text-[10px] text-slate-400 mt-0.5">Live monitoring & AI incident detection</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            {/* AI Engine Status */}
+            <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full border text-[11px] font-bold transition-all ${aiStatusColor}`}>
+              <Cpu size={11} />
+              {aiStatus === 'alert' ? 'AI ALERT' : aiStatus === 'active' ? 'AI ACTIVE' : 'AI IDLE'}
+              {aiStatus === 'active' && <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-pulse ml-0.5" />}
+              {aiStatus === 'alert' && <span className="w-1.5 h-1.5 bg-red-400 rounded-full animate-ping ml-0.5" />}
+            </div>
+
+            {/* AI service health */}
+            <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-semibold ${aiServiceOnline ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${aiServiceOnline ? 'bg-emerald-400' : 'bg-red-400'}`} />
+              {aiServiceOnline ? 'AI Service' : 'AI Offline'}
+            </div>
+
+            {/* AI toggle */}
+            <button
+              onClick={() => { setAiEnabled(e => !e); setAiStatus(aiEnabled ? 'idle' : 'active'); }}
+              className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-all ${aiEnabled ? 'bg-yellow-500/20 border-yellow-500/50 text-yellow-400 hover:bg-yellow-500/30' : 'bg-slate-700 border-slate-600 text-slate-400 hover:bg-slate-600'}`}
+            >
+              {aiEnabled ? 'Disable AI' : 'Enable AI'}
+            </button>
+
             {!isConnected && (
-              <div className="flex items-center gap-2 bg-amber-50 px-3 py-1.5 rounded-full">
-                <div className="w-2 h-2 bg-amber-500 rounded-full"></div>
-                <span className="text-xs font-medium text-amber-600">Reconnecting...</span>
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-500/20 border border-amber-500/40 rounded-full text-[10px] font-semibold text-amber-400">
+                <WifiOff size={10} /> Reconnecting
               </div>
             )}
             {activeLiveStreams > 0 && (
-              <div className="flex items-center gap-2 bg-red-50 px-3 py-1.5 rounded-full">
-                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                <span className="text-xs font-medium text-red-600">{activeLiveStreams} Live Streams</span>
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-red-500/20 border border-red-500/40 rounded-full text-[10px] font-semibold text-red-400">
+                <span className="w-1.5 h-1.5 bg-red-400 rounded-full animate-pulse" />
+                {activeLiveStreams} LIVE
               </div>
             )}
-            <div className="relative">
-              <button 
-                onClick={() => setShowAlerts(!showAlerts)}
-                className="relative p-2 hover:bg-zinc-100 rounded-xl transition-all"
-              >
-                <AlertTriangle className="w-5 h-5 text-amber-500" />
-                {unreadAlerts > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                    {unreadAlerts}
-                  </span>
-                )}
-              </button>
-              {showAlerts && (
-                <div className="absolute right-0 top-12 w-80 bg-white rounded-2xl shadow-xl border border-zinc-200 z-50">
-                  <div className="p-4 border-b border-zinc-100">
-                    <h3 className="font-semibold">Recent Alerts</h3>
-                  </div>
-                  <div className="max-h-96 overflow-y-auto">
-                    {alerts.length === 0 ? (
-                      <p className="p-4 text-center text-zinc-500">No alerts</p>
-                    ) : (
-                      alerts.map(alert => (
-                        <div 
-                          key={alert.id} 
-                          className={`p-3 border-b border-zinc-100 hover:bg-zinc-50 cursor-pointer ${!alert.is_viewed ? 'bg-amber-50' : ''}`}
-                          onClick={() => markAlertRead(alert.id)}
-                        >
-                          <p className="text-sm font-medium">{alert.incident_type || 'System Alert'}</p>
-                          <p className="text-xs text-zinc-500 mt-1">{alert.alert_message || alert.message}</p>
-                          <p className="text-xs text-zinc-400 mt-1">{formatTime(alert.created_at)}</p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-            <button 
-              onClick={handleRefresh}
-              className={`flex items-center gap-2 px-5 py-2 bg-white border border-zinc-300 hover:border-emerald-300 rounded-2xl text-sm font-medium transition-all hover:shadow ${refreshing ? 'opacity-50' : ''}`}
-            >
-              <RefreshCw size={18} className={`text-emerald-600 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
+            <button onClick={handleRefresh} className="p-2 hover:bg-slate-700 rounded-xl transition-all">
+              <RefreshCw size={15} className={`text-slate-400 ${refreshing ? 'animate-spin text-yellow-400' : ''}`} />
             </button>
+            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-sky-400 rounded-xl flex items-center justify-center font-bold text-sm shadow">
+              {user?.fullName?.charAt(0)?.toUpperCase() || 'A'}
+            </div>
           </div>
         </header>
 
-        <main className="flex-1 p-6 md:p-8 overflow-auto bg-zinc-50">
-          <div className="grid grid-cols-1 sm:grid-cols-5 gap-4 mb-8">
-            <div className="bg-white p-4 rounded-2xl border border-zinc-200 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div><p className="text-zinc-500 text-sm">Total Cameras</p><p className="text-2xl font-bold text-zinc-900">{stats.total}</p></div>
-                <Camera className="w-8 h-8 text-emerald-500 opacity-50" />
+        {/* ── Stat Bar ───────────────────────────────────────────────── */}
+        <div className="flex items-center gap-0 border-b border-slate-700/60 flex-shrink-0 bg-slate-800/60">
+          {[
+            { label: 'Cameras', value: stats.total, icon: Camera, color: 'text-slate-300' },
+            { label: 'Active', value: stats.active, icon: Activity, color: 'text-emerald-400' },
+            { label: 'Live', value: stats.liveStreams, icon: Radio, color: 'text-red-400' },
+            { label: 'Offline', value: stats.offline, icon: WifiOff, color: 'text-slate-500' },
+            { label: 'AI Events', value: aiEventTimeline.length, icon: Zap, color: 'text-yellow-400' },
+            { label: 'AI Alerts', value: aiAlerts.length, icon: AlertTriangle, color: 'text-red-400' },
+          ].map(({ label, value, icon: Icon, color }) => (
+            <div key={label} className="flex-1 flex items-center gap-2 px-4 py-2.5 border-r border-slate-700/60 last:border-r-0">
+              <Icon size={14} className={color} />
+              <div>
+                <p className={`text-base font-bold leading-none ${color}`}>{value}</p>
+                <p className="text-[10px] text-slate-500 font-medium mt-0.5">{label}</p>
               </div>
             </div>
-            <div className="bg-white p-4 rounded-2xl border border-zinc-200 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div><p className="text-zinc-500 text-sm">Active Cameras</p><p className="text-2xl font-bold text-emerald-600">{stats.active}</p></div>
-                <Video className="w-8 h-8 text-emerald-500 opacity-50" />
-              </div>
-            </div>
-            <div className="bg-white p-4 rounded-2xl border border-zinc-200 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div><p className="text-zinc-500 text-sm">Live Streams</p><p className="text-2xl font-bold text-red-500">{stats.liveStreams}</p></div>
-                <Radio className="w-8 h-8 text-red-500 opacity-50" />
-              </div>
-            </div>
-            <div className="bg-white p-4 rounded-2xl border border-zinc-200 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div><p className="text-zinc-500 text-sm">Offline Cameras</p><p className="text-2xl font-bold text-red-500">{stats.offline}</p></div>
-                <WifiOff className="w-8 h-8 text-red-500 opacity-50" />
-              </div>
-            </div>
-            <div className="bg-white p-4 rounded-2xl border border-zinc-200 shadow-sm">
-              <div className="flex items-center justify-between">
-                <div><p className="text-zinc-500 text-sm">Active Viewers</p><p className="text-2xl font-bold text-blue-500">{stats.viewers}</p></div>
-                <Users className="w-8 h-8 text-blue-500 opacity-50" />
-              </div>
-            </div>
-          </div>
+          ))}
+        </div>
 
-          {activeLiveStreams > 0 && (
-            <div className="mb-8">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <Radio className="w-5 h-5 text-red-500" />
-                  <h2 className="text-lg font-semibold text-zinc-900">Live Broadcasts</h2>
-                  <span className="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full">{activeLiveStreams} active</span>
+        {/* ── Main Content ───────────────────────────────────────────── */}
+        <div className="flex-1 flex overflow-hidden">
+
+          {/* Left: Camera Grid + Live Streams */}
+          <main className="flex-1 overflow-auto p-5 space-y-5">
+
+            {/* Live Broadcasts */}
+            {activeLiveStreams > 0 && (
+              <section>
+                <div className="flex items-center gap-2 mb-3">
+                  <Radio size={15} className="text-red-400" />
+                  <h2 className="text-sm font-bold text-white">Live Broadcasts</h2>
+                  <span className="bg-red-500/20 text-red-400 border border-red-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full">{activeLiveStreams} ACTIVE</span>
+                  {aiEnabled && (
+                    <span className="bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <Cpu size={9} /> AI ANALYZING
+                    </span>
+                  )}
                 </div>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {liveStreams.map((stream) => (
-                  <div
-                    key={stream.streamId}
-                    onClick={() => watchLiveStream(stream)}
-                    className="group bg-white rounded-2xl border-2 border-red-500 overflow-hidden shadow-lg hover:shadow-xl transition-all cursor-pointer hover:-translate-y-1"
-                  >
-                    <div className="relative aspect-video bg-gradient-to-br from-zinc-900 to-zinc-800 overflow-hidden">
-                      <img
-                        id={`video-${stream.streamId}`}
-                        className="w-full h-full object-cover absolute inset-0"
-                        style={{ display: streamFrames[stream.streamId] ? 'block' : 'none' }}
-                        alt="Live stream"
-                      />
-                      <div 
-                        id={`placeholder-${stream.streamId}`}
-                        className="absolute inset-0 flex flex-col items-center justify-center"
-                        style={{ display: streamFrames[stream.streamId] ? 'none' : 'flex' }}
-                      >
-                        <Radio className="w-12 h-12 text-red-500 mb-2 animate-pulse" />
-                        <p className="text-white text-xs">Waiting for stream...</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {liveStreams.map((stream) => (
+                    <div key={stream.streamId} onClick={() => watchLiveStream(stream)}
+                      className="group relative bg-slate-800 rounded-2xl border border-red-500/50 overflow-hidden shadow-lg hover:shadow-red-500/20 hover:shadow-xl transition-all cursor-pointer hover:-translate-y-0.5">
+                      <div className="relative aspect-video bg-slate-900 overflow-hidden">
+                        <img id={`video-${stream.streamId}`} className="w-full h-full object-cover absolute inset-0"
+                          style={{ display: streamFrames[stream.streamId] ? 'block' : 'none' }} alt="Live" />
+                        <div id={`placeholder-${stream.streamId}`} className="absolute inset-0 flex flex-col items-center justify-center"
+                          style={{ display: streamFrames[stream.streamId] ? 'none' : 'flex' }}>
+                          <Radio className="w-10 h-10 text-red-500 mb-2 animate-pulse" />
+                          <p className="text-slate-400 text-xs">Waiting for stream...</p>
+                        </div>
+                        <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-black/70 px-2 py-0.5 rounded-full">
+                          <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                          <span className="text-white text-[10px] font-bold">LIVE</span>
+                        </div>
+                        {aiEnabled && (
+                          <div className="absolute top-2 right-2 flex items-center gap-1 bg-yellow-500/20 border border-yellow-500/40 px-1.5 py-0.5 rounded-full">
+                            <Cpu size={9} className="text-yellow-400" />
+                            <span className="text-yellow-400 text-[9px] font-bold">AI</span>
+                          </div>
+                        )}
+                        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+                          <p className="text-white text-xs font-semibold">{stream.cameraName}</p>
+                          <p className="text-slate-400 text-[10px] flex items-center gap-1"><MapPin size={8} />{stream.location}</p>
+                        </div>
                       </div>
-                      <div className="absolute top-3 left-3 flex items-center gap-2 z-10">
-                        <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                        <span className="text-white text-xs font-medium bg-black/50 px-2 py-0.5 rounded">LIVE</span>
-                      </div>
-                      <div className="absolute top-3 right-3 bg-black/50 text-white text-xs px-2 py-0.5 rounded flex items-center gap-1 z-10">
-                        <Eye className="w-3 h-3" />
-                        {stream.viewerCount || 0}
+                      <div className="px-3 py-2 flex items-center justify-between">
+                        <p className="text-slate-400 text-[10px]">Started {formatTime(stream.startTime)}</p>
+                        <div className="flex items-center gap-1 text-slate-400 text-[10px]"><Eye size={10} /> {stream.viewerCount || 0}</div>
                       </div>
                     </div>
-                    <div className="p-4">
-                      <h3 className="font-semibold text-zinc-900">{stream.cameraName}</h3>
-                      <p className="text-sm text-zinc-500 mt-1 flex items-center gap-1">
-                        <MapPin className="w-3 h-3" />
-                        {stream.location}
-                      </p>
-                      <p className="text-xs text-zinc-400 mt-2">Started {formatTime(stream.startTime)}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                  ))}
+                </div>
+              </section>
+            )}
 
-          <div className="flex flex-col sm:flex-row gap-4 mb-8 items-center justify-between bg-white p-4 rounded-3xl border border-zinc-100 shadow-sm">
-            <div className="flex items-center gap-8 text-sm">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-emerald-500 rounded-full animate-pulse"></div>
-                <span className="font-medium text-emerald-700">{stats.active} Cameras ACTIVE</span>
+            {/* Camera Grid */}
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <Camera size={15} className="text-slate-400" />
+                <h2 className="text-sm font-bold text-white">Camera Network</h2>
+                <span className="text-[10px] text-slate-500">{cameras.length} cameras</span>
               </div>
-              {activeLiveStreams > 0 && (
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-                  <span className="font-medium text-red-700">{activeLiveStreams} LIVE STREAMS</span>
+              {cameras.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-20 text-slate-600">
+                  <Camera size={40} className="mb-3 opacity-30" />
+                  <p className="font-medium">No cameras configured</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {cameras.map((camera) => (
+                    <div key={camera.id} onClick={() => { setSelectedCamera(camera); setShowModal(true); }}
+                      className={`group relative bg-slate-800 rounded-2xl overflow-hidden border transition-all cursor-pointer hover:-translate-y-0.5 hover:shadow-lg ${
+                        camera.status === 'active' ? 'border-emerald-500/50 hover:shadow-emerald-500/10' : 'border-slate-700/60'}`}>
+                      <div className="relative aspect-video bg-slate-950 overflow-hidden">
+                        <div className="absolute inset-0 bg-[radial-gradient(#333_0.8px,transparent_1px)] bg-[length:3px_3px] opacity-50" />
+                        {camera.status === 'active' ? (
+                          <>
+                            <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-black/70 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">
+                              <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" /> ACTIVE
+                            </div>
+                            <div className="absolute inset-0 flex flex-col items-center justify-center text-white/40 group-hover:text-white/70 transition-colors">
+                              <Play size={36} className="mb-1" />
+                              <p className="text-[10px] tracking-widest">FEED</p>
+                            </div>
+                            {aiEnabled && (
+                              <div className="absolute top-3 right-10 flex items-center gap-1 bg-yellow-500/20 border border-yellow-500/30 px-1.5 py-0.5 rounded-full">
+                                <Cpu size={9} className="text-yellow-400" />
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-600">
+                            <Camera size={28} className="mb-2 opacity-40" />
+                            <p className="text-xs font-medium">OFFLINE</p>
+                          </div>
+                        )}
+                        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 to-transparent p-3">
+                          <p className="text-white text-xs font-semibold">{camera.camera_name}</p>
+                          <p className="text-emerald-400 text-[10px] flex items-center gap-1"><MapPin size={8} />{camera.location_name || 'Unknown'}</p>
+                        </div>
+                        <div className="absolute top-3 right-3 bg-black/70 text-white text-[9px] px-1.5 py-0.5 rounded font-mono">{camera.resolution || '1080p'}</div>
+                      </div>
+                      <div className="p-3 flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <div className={`w-1.5 h-1.5 rounded-full ${getStatusColor(camera.status)}`} />
+                          <p className={`text-[10px] font-semibold ${camera.status === 'active' ? 'text-emerald-400' : camera.status === 'maintenance' ? 'text-amber-400' : 'text-red-400'}`}>
+                            {getStatusText(camera.status)}
+                          </p>
+                        </div>
+                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {camera.status === 'active' && (
+                            <button className="p-1.5 hover:bg-red-500/20 text-red-400 rounded-lg transition-colors" onClick={(e) => { e.stopPropagation(); startRecording(camera.id); }}>
+                              <Circle size={12} />
+                            </button>
+                          )}
+                          <button className="p-1.5 hover:bg-slate-700 text-slate-400 rounded-lg transition-colors"><Maximize2 size={12} /></button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-                <span className="text-zinc-500">{stats.offline} Cameras OFFLINE</span>
-              </div>
-            </div>
-            <div className="text-xs text-zinc-500 font-mono">
-              {isConnected ? '🟢 Connected' : '🔴 Disconnected'} • Last updated: {new Date().toLocaleTimeString()}
-            </div>
-          </div>
+            </section>
+          </main>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {cameras.map((camera) => (
-              <div
-                key={camera.id}
-                onClick={() => {
-                  setSelectedCamera(camera);
-                  setShowModal(true);
-                }}
-                className={`group relative bg-white border rounded-3xl overflow-hidden shadow hover:shadow-xl transition-all duration-300 cursor-pointer hover:-translate-y-1 ${
-                  camera.status === 'active' ? 'border-emerald-500 border-2' : 'border-zinc-200'
-                }`}
-              >
-                <div className="relative aspect-video bg-zinc-950 flex items-center justify-center overflow-hidden">
-                  <div className="absolute inset-0 bg-[radial-gradient(#444_0.8px,transparent_1px)] bg-[length:3px_3px] opacity-40"></div>
-                  {camera.status === 'active' ? (
+          {/* ── Right Panel: AI Monitoring + Timeline ─────────────────── */}
+          <aside className="w-80 flex-shrink-0 bg-slate-800/80 border-l border-slate-700/60 flex flex-col overflow-hidden">
+
+            {/* AI Monitoring Panel */}
+            <div className="border-b border-slate-700/60 flex-shrink-0">
+              <button onClick={() => setShowAiPanel(p => !p)}
+                className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-700/40 transition-colors">
+                <div className="flex items-center gap-2">
+                  <Crosshair size={14} className="text-yellow-400" />
+                  <span className="text-xs font-bold text-white">AI Monitoring Panel</span>
+                  {aiStatus !== 'idle' && (
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${aiStatus === 'alert' ? 'bg-red-500/30 text-red-300' : 'bg-yellow-500/20 text-yellow-400'}`}>
+                      {aiStatus.toUpperCase()}
+                    </span>
+                  )}
+                </div>
+                {showAiPanel ? <ChevronUp size={13} className="text-slate-400" /> : <ChevronDown size={13} className="text-slate-400" />}
+              </button>
+
+              {showAiPanel && (
+                <div className="px-4 pb-4 space-y-3">
+                  {!currentDetection ? (
+                    <div className="flex flex-col items-center py-6 text-slate-600">
+                      <Cpu size={28} className="mb-2 opacity-40" />
+                      <p className="text-xs font-medium">Open a live stream to</p>
+                      <p className="text-xs">activate AI analysis</p>
+                    </div>
+                  ) : (
                     <>
-                      <div className="absolute top-4 left-4 flex items-center gap-1.5 bg-black/70 text-white text-xs px-3 py-1 rounded-full font-medium">
-                        <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                        ACTIVE
+                      {/* Decision card */}
+                      <div className={`rounded-xl p-3 border ${
+                        currentDetection.isAlert
+                          ? 'bg-red-500/10 border-red-500/40'
+                          : currentDetection.accidentConfidence >= 45
+                          ? 'bg-yellow-500/10 border-yellow-500/40'
+                          : 'bg-slate-700/60 border-slate-600/40'
+                      }`}>
+                        <div className="flex items-start justify-between mb-2">
+                          <p className={`text-xs font-bold leading-tight ${currentDetection.isAlert ? 'text-red-300' : currentDetection.accidentConfidence >= 45 ? 'text-yellow-300' : 'text-emerald-300'}`}>
+                            {currentDetection.decision}
+                          </p>
+                          <SeverityBadge severity={currentDetection.severity} />
+                        </div>
+                        <ConfidenceBar value={currentDetection.accidentConfidence} />
+                        <p className="text-[10px] text-slate-400 mt-2 leading-tight">{currentDetection.responseAction}</p>
+                        <div className="flex items-center justify-between mt-2">
+                          <span className="text-[9px] text-slate-500 font-mono">{currentDetection.aiEngine}</span>
+                          <span className="text-[9px] text-slate-500">{currentDetection.processingTimeMs}ms</span>
+                        </div>
                       </div>
-                      <div className="flex flex-col items-center justify-center text-white/70 group-hover:text-white transition-colors">
-                        <Play className="w-14 h-14 mb-2" />
-                        <p className="text-xs tracking-widest">CAMERA FEED</p>
+
+                      {/* Tracked objects */}
+                      {currentDetection.trackedObjects?.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                            <BarChart2 size={10} /> Tracked Objects ({currentDetection.trackedObjects.length})
+                          </p>
+                          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1 scrollbar-thin">
+                            {currentDetection.trackedObjects.map((obj) => (
+                              <div key={obj.id} className="flex items-center gap-2 bg-slate-700/50 rounded-lg px-2.5 py-1.5 border border-slate-600/40">
+                                <span className="text-[9px] font-mono text-yellow-400 w-7 flex-shrink-0">{obj.id}</span>
+                                <span className="text-[11px] font-semibold text-white flex-1 capitalize">{obj.label}</span>
+                                <span className="text-[10px] text-slate-400">{obj.direction}</span>
+                                <span className="text-[10px] font-mono text-slate-300">{obj.confidence}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Stats row */}
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { label: 'Frames', value: currentDetection.framesAnalyzed },
+                          { label: 'Objects', value: currentDetection.rawDetections },
+                          { label: 'Analyzed', value: aiFrameCounter },
+                        ].map(({ label, value }) => (
+                          <div key={label} className="bg-slate-700/50 rounded-lg px-2 py-1.5 text-center border border-slate-600/40">
+                            <p className="text-sm font-bold text-white">{value}</p>
+                            <p className="text-[9px] text-slate-500">{label}</p>
+                          </div>
+                        ))}
                       </div>
                     </>
-                  ) : (
-                    <div className="text-center text-white/50">
-                      <Camera className="w-16 h-16 mx-auto mb-3 opacity-40" />
-                      <p className="font-medium">OFFLINE</p>
-                    </div>
                   )}
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-5">
-                    <p className="text-white font-semibold text-lg">{camera.camera_name}</p>
-                    <p className="text-emerald-300 text-sm flex items-center gap-1">
-                      <MapPin className="w-3 h-3" />
-                      {camera.location_name || 'Unknown'}
-                    </p>
-                  </div>
-                  <div className="absolute top-4 right-4 bg-black/70 text-white text-[10px] px-2.5 py-0.5 rounded font-mono tracking-wider">
-                    {camera.resolution || '1080p'}
-                  </div>
                 </div>
-                <div className="p-4 flex items-center justify-between border-t border-zinc-100">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${getStatusColor(camera.status)}`}></div>
-                    <p className={`text-xs font-medium ${camera.status === 'active' ? 'text-emerald-600' : camera.status === 'maintenance' ? 'text-amber-600' : 'text-red-600'}`}>
-                      {getStatusText(camera.status)}
-                    </p>
-                  </div>
-                  <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {camera.status === 'active' && (
-                      <button className="p-2 hover:bg-emerald-50 text-emerald-600 rounded-xl transition-colors" onClick={(e) => { e.stopPropagation(); startRecording(camera.id); }}>
-                        <Circle className="w-4 h-4" />
-                      </button>
-                    )}
-                    <button className="p-2 hover:bg-sky-50 text-sky-600 rounded-xl transition-colors"><Volume2 className="w-4 h-4" /></button>
-                    <button className="p-2 hover:bg-zinc-100 text-zinc-600 rounded-xl transition-colors"><Maximize2 className="w-4 h-4" /></button>
-                  </div>
+              )}
+            </div>
+
+            {/* Smart Event Timeline */}
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <button onClick={() => setShowTimeline(p => !p)}
+                className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-700/40 transition-colors flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <Clock size={14} className="text-indigo-400" />
+                  <span className="text-xs font-bold text-white">Event Timeline</span>
+                  <span className="bg-slate-700 text-slate-300 text-[9px] font-bold px-1.5 py-0.5 rounded-full">{aiEventTimeline.length}</span>
                 </div>
-              </div>
-            ))}
-          </div>
-        </main>
+                <div className="flex items-center gap-2">
+                  {aiEventTimeline.length > 0 && (
+                    <button onClick={(e) => { e.stopPropagation(); exportAIEvents(); }}
+                      className="p-1 hover:bg-slate-600 rounded-lg text-slate-400 hover:text-white transition-colors">
+                      <Download size={11} />
+                    </button>
+                  )}
+                  {showTimeline ? <ChevronUp size={13} className="text-slate-400" /> : <ChevronDown size={13} className="text-slate-400" />}
+                </div>
+              </button>
+
+              {showTimeline && (
+                <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
+                  {aiEventTimeline.length === 0 ? (
+                    <div className="flex flex-col items-center py-8 text-slate-600">
+                      <TrendingUp size={24} className="mb-2 opacity-30" />
+                      <p className="text-xs">No AI events yet</p>
+                    </div>
+                  ) : (
+                    aiEventTimeline.map((event, i) => (
+                      <div key={i} className={`rounded-xl p-2.5 border transition-all ${
+                        event.isAlert
+                          ? 'bg-red-500/10 border-red-500/30'
+                          : event.accidentConfidence >= 45
+                          ? 'bg-yellow-500/10 border-yellow-500/20'
+                          : 'bg-slate-700/40 border-slate-600/30'
+                      }`}>
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <p className={`text-[11px] font-semibold leading-tight flex-1 ${event.isAlert ? 'text-red-300' : event.accidentConfidence >= 45 ? 'text-yellow-300' : 'text-slate-300'}`}>
+                            {event.decision}
+                          </p>
+                          {event.isAlert && <AlertCircle size={12} className="text-red-400 flex-shrink-0 mt-0.5" />}
+                          {!event.isAlert && event.accidentConfidence >= 45 && <AlertTriangle size={12} className="text-yellow-400 flex-shrink-0 mt-0.5" />}
+                          {event.accidentConfidence < 45 && <CheckCircle size={12} className="text-emerald-500 flex-shrink-0 mt-0.5" />}
+                        </div>
+                        <ConfidenceBar value={event.accidentConfidence} />
+                        <div className="flex items-center justify-between mt-1.5">
+                          <span className="text-[9px] text-slate-500 font-mono">
+                            {new Date(event.timestamp).toLocaleTimeString()}
+                          </span>
+                          <SeverityBadge severity={event.severity} />
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          </aside>
+        </div>
       </div>
 
-      {/* Live Stream Modal */}
+      {/* ── AI-Enhanced Live Stream Modal ─────────────────────────────── */}
       {showStreamModal && selectedStream && (
-        <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4" onClick={closeStreamModal}>
-          <div className="bg-white rounded-3xl max-w-5xl w-full max-h-[90vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="p-4 border-b border-zinc-200 flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                  <h2 className="text-xl font-bold text-zinc-900">LIVE: {selectedStream.cameraName}</h2>
-                </div>
-                <p className="text-sm text-zinc-500 flex items-center gap-1 mt-1"><MapPin className="w-3 h-3" />{selectedStream.location}</p>
-              </div>
-              <button onClick={closeStreamModal} className="p-2 hover:bg-zinc-100 rounded-xl transition-colors"><X className="w-5 h-5" /></button>
-            </div>
-            
-            <div className="relative bg-black aspect-video">
-              <img
-                id="modal-video"
-                className="w-full h-full object-contain"
-                style={{ display: streamFrames[selectedStream.streamId] ? 'block' : 'none' }}
-                alt="Live stream"
-              />
-              <div 
-                id="modal-placeholder" 
-                className="absolute inset-0 flex items-center justify-center"
-                style={{ display: streamFrames[selectedStream.streamId] ? 'none' : 'flex' }}
-              >
-                <div className="text-center">
-                  <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
-                    <Radio className="w-10 h-10 text-red-500" />
+        <div className="fixed inset-0 bg-black/95 flex z-50" onClick={closeStreamModal}>
+          <div
+            ref={modalRowRef}
+            className="flex flex-row flex-1 m-4 max-h-full overflow-hidden"
+            style={{ gap: 0 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+
+            {/* Video Area — fills remaining space */}
+            <div className="flex flex-col bg-slate-900 rounded-l-2xl overflow-hidden border border-slate-700 min-w-0" style={{ flex: 1 }}>
+              {/* Modal Header */}
+              <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between flex-shrink-0 bg-slate-800/80">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                    <span className="text-white font-bold text-sm">LIVE:</span>
+                    <span className="text-red-300 font-semibold text-sm">{selectedStream.cameraName}</span>
                   </div>
-                  <p className="text-white text-lg font-medium">Connecting to stream...</p>
-                  <p className="text-zinc-400 text-sm mt-2">Waiting for video feed</p>
+                  <span className="text-slate-400 text-xs flex items-center gap-1"><MapPin size={10} />{selectedStream.location}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {aiEnabled && (
+                    <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold ${aiStatusColor}`}>
+                      <Cpu size={10} />
+                      {aiStatus === 'alert' ? '⚠ AI ALERT' : 'AI ACTIVE'}
+                    </div>
+                  )}
+                  <button onClick={closeStreamModal} className="p-1.5 hover:bg-slate-700 rounded-xl text-slate-400 hover:text-white transition-colors">
+                    <X size={16} />
+                  </button>
                 </div>
               </div>
+
+              {/* Video Feed — canvas renders frames + AI bbox overlay smoothly */}
+              <div className="relative flex-1 bg-black overflow-hidden" style={{ minHeight: 0 }}>
+                {/* Canvas: frames painted here, bboxes drawn on top */}
+                <canvas
+                  ref={modalCanvasRef}
+                  className="w-full h-full object-contain"
+                  style={{ display: streamFrames[selectedStream.streamId] ? 'block' : 'none', imageRendering: 'auto' }}
+                />
+
+                {/* Placeholder until first frame arrives */}
+                {!streamFrames[selectedStream.streamId] && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-3 animate-pulse">
+                        <Radio size={28} className="text-red-500" />
+                      </div>
+                      <p className="text-white font-semibold">Connecting to stream...</p>
+                      <p className="text-slate-400 text-sm mt-1">Waiting for video feed</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Detected objects legend (top-left chip row) */}
+                {aiEnabled && currentDetection?.detections?.length > 0 && (
+                  <div className="absolute top-3 left-3 flex flex-wrap gap-1.5 max-w-[60%]">
+                    {[...new Set(currentDetection.detections.map(d => d.label))].slice(0,6).map(label => (
+                      <span key={label}
+                        className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                        style={{ backgroundColor: getLabelColor(label), color: '#000' }}>
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* AI Alert Overlay Banner */}
+                {aiStatus === 'alert' && currentDetection?.isAlert && (
+                  <div className="absolute top-3 right-3 left-auto bg-red-600/90 backdrop-blur border border-red-400/60 rounded-xl px-4 py-2 flex items-center gap-2">
+                    <AlertCircle size={14} className="text-white flex-shrink-0 animate-pulse" />
+                    <div className="min-w-0">
+                      <p className="text-white font-bold text-xs truncate">{currentDetection.decision}</p>
+                      <p className="text-red-200 text-[10px]">{currentDetection.accidentConfidence}% confidence</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Analyzing pill (non-alert) */}
+                {aiEnabled && aiStatus === 'active' && !currentDetection?.isAlert && (
+                  <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-yellow-500/20 backdrop-blur border border-yellow-500/40 px-3 py-1.5 rounded-full">
+                    <Cpu size={12} className="text-yellow-400" />
+                    <span className="text-yellow-300 text-[11px] font-bold">AI Analyzing</span>
+                    <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-pulse" />
+                  </div>
+                )}
+              </div>
+
+              {/* Action Bar */}
+              <div className="px-4 py-3 border-t border-slate-700 flex gap-2 flex-shrink-0 bg-slate-800/80">
+                <button className="flex-1 py-2 bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl text-xs font-bold hover:bg-red-500/30 transition-colors flex items-center justify-center gap-1.5">
+                  <AlertTriangle size={13} /> Report Incident
+                </button>
+                <button className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors flex items-center justify-center gap-1.5">
+                  <Download size={13} /> Save Clip
+                </button>
+                <button onClick={closeStreamModal} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors">
+                  Close
+                </button>
+              </div>
             </div>
-            
-            <div className="p-4 border-t border-zinc-200 flex gap-3">
-              <button className="flex-1 py-3 bg-red-500 text-white rounded-xl font-medium hover:bg-red-600 transition-colors flex items-center justify-center gap-2" onClick={() => {}}><AlertTriangle className="w-4 h-4" />Report Incident</button>
-              <button className="flex-1 py-3 bg-zinc-500 text-white rounded-xl font-medium hover:bg-zinc-600 transition-colors" onClick={closeStreamModal}>Close</button>
-            </div>
+
+            {/* ── Drag Divider ── */}
+            {aiEnabled && (
+              <div
+                onMouseDown={onDividerMouseDown}
+                className="flex-shrink-0 flex items-center justify-center bg-slate-800 border-y border-slate-700 hover:bg-indigo-500/20 transition-colors group"
+                style={{ width: 6, cursor: 'col-resize', zIndex: 10 }}
+                title="Drag to resize panels"
+              >
+                <div className="w-0.5 h-8 rounded-full bg-slate-600 group-hover:bg-indigo-400 transition-colors" />
+              </div>
+            )}
+
+            {/* AI Side Panel in Modal */}
+            {aiEnabled && (
+              <div
+                className="flex-shrink-0 bg-slate-900 rounded-r-2xl border border-slate-700 flex flex-col overflow-hidden"
+                style={{ width: aiPanelWidth }}
+              >
+                <div className="px-4 py-3 border-b border-slate-700 bg-slate-800/60 flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Cpu size={14} className="text-yellow-400" />
+                    <span className="text-xs font-bold text-white">AI Intelligence</span>
+                    <span className={`ml-auto text-[9px] font-bold px-2 py-0.5 rounded-full border ${aiStatusColor}`}>
+                      {aiStatus.toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-3 space-y-3">
+                  {/* GPS Map — always shown when stream is open */}
+                  <StreamLocationMap locationStr={selectedStream.location} />
+
+                  {/* Current Decision */}
+                  {currentDetection ? (
+                    <>
+                      <div className={`rounded-xl p-3 border ${currentDetection.isAlert ? 'bg-red-500/15 border-red-500/50' : currentDetection.accidentConfidence >= 45 ? 'bg-yellow-500/10 border-yellow-500/40' : 'bg-slate-800 border-slate-700'}`}>
+                        {/* Category badge */}
+                        {currentDetection.incidentCategory && currentDetection.incidentCategory !== 'None' && (
+                          <div className="mb-2">
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
+                              currentDetection.incidentCategory === 'Unknown'
+                                ? 'bg-blue-500/20 border-blue-500/40 text-blue-300'
+                                : currentDetection.isAlert
+                                ? 'bg-red-500/20 border-red-500/40 text-red-300'
+                                : 'bg-yellow-500/20 border-yellow-500/40 text-yellow-300'
+                            }`}>
+                              {currentDetection.incidentCategory}
+                            </span>
+                          </div>
+                        )}
+                        <p className="text-[10px] text-slate-400 uppercase font-bold mb-1">AI Decision</p>
+                        <p className={`text-sm font-bold mb-2 ${currentDetection.isAlert ? 'text-red-300' : currentDetection.accidentConfidence >= 45 ? 'text-yellow-300' : 'text-emerald-300'}`}>
+                          {currentDetection.decision}
+                        </p>
+                        <ConfidenceBar value={currentDetection.accidentConfidence} />
+                        <div className="mt-2 flex items-center justify-between">
+                          <SeverityBadge severity={currentDetection.severity} />
+                          <span className="text-[9px] text-slate-500">{currentDetection.framesAnalyzed} frames</span>
+                        </div>
+                      </div>
+
+                      {/* Response Action */}
+                      <div className="bg-slate-800 rounded-xl p-3 border border-slate-700">
+                        <p className="text-[10px] text-slate-400 uppercase font-bold mb-1 flex items-center gap-1">
+                          <Shield size={9} /> Suggested Action
+                        </p>
+                        <p className="text-xs text-white font-medium">{currentDetection.responseAction}</p>
+                      </div>
+
+                      {/* Tracked Objects */}
+                      {currentDetection.trackedObjects?.length > 0 && (
+                        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                          <div className="px-3 py-2 border-b border-slate-700 flex items-center gap-1.5">
+                            <Crosshair size={11} className="text-yellow-400" />
+                            <span className="text-[10px] font-bold text-slate-300">Tracked Objects</span>
+                            <span className="ml-auto text-[9px] text-slate-500">{currentDetection.trackedObjects.length}</span>
+                          </div>
+                          <div className="divide-y divide-slate-700/60 max-h-52 overflow-y-auto">
+                            {currentDetection.trackedObjects.map((obj) => (
+                              <div key={obj.id} className="px-3 py-2 flex items-center gap-2">
+                                <span className="text-[9px] font-mono text-yellow-400 w-6">{obj.id}</span>
+                                <span className="text-xs font-semibold text-white flex-1 capitalize">{obj.label}</span>
+                                <span className="text-[10px] text-slate-400">{obj.direction}</span>
+                                <span className="text-[10px] font-mono text-slate-300">{obj.confidence}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center py-10 text-slate-600">
+                      <div className="w-12 h-12 border-2 border-yellow-500/30 rounded-full flex items-center justify-center mb-3 animate-pulse">
+                        <Cpu size={20} className="text-yellow-400/50" />
+                      </div>
+                      <p className="text-xs font-medium">Waiting for first frame...</p>
+                      <p className="text-[10px] mt-1">AI will activate automatically</p>
+                    </div>
+                  )}
+
+                  {/* Mini Timeline */}
+                  {aiEventTimeline.length > 0 && (
+                    <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                      <div className="px-3 py-2 border-b border-slate-700 flex items-center gap-1.5">
+                        <Clock size={11} className="text-indigo-400" />
+                        <span className="text-[10px] font-bold text-slate-300">Recent Events</span>
+                      </div>
+                      <div className="divide-y divide-slate-700/40 max-h-40 overflow-y-auto">
+                        {aiEventTimeline.slice(0, 6).map((ev, i) => (
+                          <div key={i} className="px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              {ev.isAlert
+                                ? <AlertCircle size={10} className="text-red-400 flex-shrink-0" />
+                                : <CheckCircle size={10} className="text-emerald-500 flex-shrink-0" />}
+                              <p className={`text-[10px] font-medium flex-1 truncate ${ev.isAlert ? 'text-red-300' : 'text-slate-300'}`}>
+                                {ev.decision}
+                              </p>
+                              <span className="text-[9px] text-slate-500 font-mono flex-shrink-0">
+                                {new Date(ev.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Camera Detail Modal */}
+      {/* ── Camera Detail Modal ────────────────────────────────────────── */}
       {showModal && selectedCamera && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
-          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="p-4 border-b border-zinc-200 flex items-center justify-between">
-              <div><h2 className="text-xl font-bold text-zinc-900">{selectedCamera.camera_name}</h2><p className="text-sm text-zinc-500 flex items-center gap-1 mt-1"><MapPin className="w-3 h-3" />{selectedCamera.location_name || 'Unknown location'}</p></div>
-              <button onClick={() => setShowModal(false)} className="p-2 hover:bg-zinc-100 rounded-xl transition-colors"><X className="w-5 h-5" /></button>
+        <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-3xl w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-slate-700 flex items-center justify-between bg-slate-800/80">
+              <div>
+                <h2 className="font-bold text-white">{selectedCamera.camera_name}</h2>
+                <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5"><MapPin size={10} />{selectedCamera.location_name || 'Unknown'}</p>
+              </div>
+              <button onClick={() => setShowModal(false)} className="p-2 hover:bg-slate-700 rounded-xl text-slate-400 hover:text-white transition-colors"><X size={16} /></button>
             </div>
             <div className="relative bg-black aspect-video">
-              {selectedCamera.status === 'active' && selectedCamera.stream_url ? (
-                <video src={selectedCamera.stream_url} controls autoPlay className="w-full h-full object-contain" />
-              ) : (
-                <div className="flex items-center justify-center h-full"><div className="text-center"><Camera className="w-16 h-16 text-zinc-600 mx-auto mb-4" /><p className="text-zinc-400">Camera is offline</p></div></div>
+              {selectedCamera.status === 'active' && selectedCamera.stream_url
+                ? <video src={selectedCamera.stream_url} controls autoPlay className="w-full h-full object-contain" />
+                : <div className="flex items-center justify-center h-full"><div className="text-center"><Camera className="w-12 h-12 text-slate-600 mx-auto mb-3" /><p className="text-slate-500">Camera is offline</p></div></div>}
+              {selectedCamera.status === 'active' && (
+                <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-emerald-500 text-white px-2.5 py-1 rounded-full text-xs font-bold">
+                  <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" /> ACTIVE
+                </div>
               )}
-              {selectedCamera.status === 'active' && <div className="absolute top-4 left-4 flex items-center gap-2 bg-emerald-500 text-white px-3 py-1 rounded-full text-sm font-medium"><div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>ACTIVE</div>}
             </div>
-            <div className="p-6 grid grid-cols-2 gap-4">
-              <div className="bg-zinc-50 p-3 rounded-xl"><p className="text-zinc-500 text-xs mb-1">Status</p><p className="font-medium flex items-center gap-2"><div className={`w-2 h-2 rounded-full ${getStatusColor(selectedCamera.status)}`}></div>{getStatusText(selectedCamera.status)}</p></div>
-              <div className="bg-zinc-50 p-3 rounded-xl"><p className="text-zinc-500 text-xs mb-1">Resolution</p><p className="font-medium">{selectedCamera.resolution || '1080p'}</p></div>
-              <div className="bg-zinc-50 p-3 rounded-xl"><p className="text-zinc-500 text-xs mb-1">Last Active</p><p className="font-medium text-sm">{formatTime(selectedCamera.last_active)}</p></div>
-              <div className="bg-zinc-50 p-3 rounded-xl"><p className="text-zinc-500 text-xs mb-1">Recordings</p><p className="font-medium">{selectedCamera.recording_count || 0} recordings</p></div>
+            <div className="p-4 grid grid-cols-4 gap-3">
+              {[
+                { label: 'Status', value: getStatusText(selectedCamera.status) },
+                { label: 'Resolution', value: selectedCamera.resolution || '1080p' },
+                { label: 'Last Active', value: formatTime(selectedCamera.last_active) },
+                { label: 'Recordings', value: `${selectedCamera.recording_count || 0} clips` },
+              ].map(({ label, value }) => (
+                <div key={label} className="bg-slate-800 p-3 rounded-xl border border-slate-700">
+                  <p className="text-[10px] text-slate-500 mb-1">{label}</p>
+                  <p className="text-sm font-semibold text-white">{value}</p>
+                </div>
+              ))}
             </div>
-            <div className="p-4 border-t border-zinc-200 flex gap-3">
-              {selectedCamera.status === 'active' && <button className="flex-1 py-3 bg-emerald-500 text-white rounded-xl font-medium hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2" onClick={() => startRecording(selectedCamera.id)}><Circle className="w-4 h-4" />Start Recording</button>}
-              {selectedCamera.status === 'active' && <button className="flex-1 py-3 bg-amber-500 text-white rounded-xl font-medium hover:bg-amber-600 transition-colors" onClick={() => updateCameraStatus(selectedCamera.id, 'maintenance')}>Set Maintenance</button>}
-              {selectedCamera.status === 'maintenance' && <button className="flex-1 py-3 bg-emerald-500 text-white rounded-xl font-medium hover:bg-emerald-600 transition-colors" onClick={() => updateCameraStatus(selectedCamera.id, 'active')}>Activate Camera</button>}
-              <button className="flex-1 py-3 bg-red-500 text-white rounded-xl font-medium hover:bg-red-600 transition-colors" onClick={() => setShowModal(false)}>Close</button>
+            <div className="px-4 pb-4 flex gap-2">
+              {selectedCamera.status === 'active' && (
+                <button onClick={() => startRecording(selectedCamera.id)} className="flex-1 py-2.5 bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl text-xs font-bold hover:bg-red-500/30 transition-colors flex items-center justify-center gap-1.5">
+                  <Circle size={12} /> Record
+                </button>
+              )}
+              {selectedCamera.status === 'active' && (
+                <button onClick={() => updateCameraStatus(selectedCamera.id, 'maintenance')} className="flex-1 py-2.5 bg-amber-500/20 border border-amber-500/40 text-amber-300 rounded-xl text-xs font-bold hover:bg-amber-500/30 transition-colors">
+                  Maintenance
+                </button>
+              )}
+              {selectedCamera.status === 'maintenance' && (
+                <button onClick={() => updateCameraStatus(selectedCamera.id, 'active')} className="flex-1 py-2.5 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded-xl text-xs font-bold hover:bg-emerald-500/30 transition-colors">
+                  Activate
+                </button>
+              )}
+              <button onClick={() => setShowModal(false)} className="flex-1 py-2.5 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors">Close</button>
             </div>
           </div>
         </div>

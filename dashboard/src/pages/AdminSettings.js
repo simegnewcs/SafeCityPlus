@@ -1,6 +1,7 @@
 // src/pages/AdminSettings.js
 import React, { useState, useEffect } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
+import PageHeader from "../layout/PageHeader";
 import axios from "axios";
 import { 
   User, Phone, Mail, Lock, Save, Shield, Bell, 
@@ -155,28 +156,22 @@ const AdminSettings = () => {
     <div className={`flex h-screen ${darkMode ? "dark" : ""}`}>
       <AdminSidebar user={user} />
 
-      <div className="flex-1 flex flex-col overflow-hidden bg-zinc-50 dark:bg-zinc-900">
-        {/* Top Navbar */}
-        <header className="h-16 bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 px-6 md:px-8 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-4">
-            <div className="p-2 bg-emerald-100 dark:bg-emerald-900/30 rounded-xl">
-              <SettingsIcon className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-white">Settings</h1>
-              <p className="text-sm text-zinc-500 dark:text-zinc-400">Manage your account and system preferences</p>
-            </div>
+      <div className="flex-1 flex flex-col overflow-hidden bg-slate-50 dark:bg-zinc-900">
+        <PageHeader
+          title="Settings"
+          subtitle="Manage your account and system preferences"
+          icon={<SettingsIcon size={16} />}
+          loading={loading}
+          user={user}
+        />
+        {message.text && (
+          <div className={`mx-6 mt-3 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium ${
+            message.type === "success" ? "bg-emerald-50 border border-emerald-200 text-emerald-700" : "bg-red-50 border border-red-200 text-red-700"
+          }`}>
+            {message.type === "success" ? <CheckCircle size={15} /> : <AlertCircle size={15} />}
+            {message.text}
           </div>
-
-          {message.text && (
-            <div className={`flex items-center gap-2 px-4 py-2 rounded-xl ${
-              message.type === "success" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
-            }`}>
-              {message.type === "success" ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-              <span className="text-sm">{message.text}</span>
-            </div>
-          )}
-        </header>
+        )}
 
         {/* Main Content */}
         <main className="flex-1 overflow-auto p-6 md:p-8">

@@ -1,6 +1,7 @@
 // src/pages/AdminResponders.js
 import React, { useEffect, useState, useMemo } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
+import PageHeader from "../layout/PageHeader";
 import axios from "axios";
 import { 
   UserPlus, Edit2, Trash2, Shield, Phone, MapPin, 
@@ -218,13 +219,13 @@ const AdminResponders = () => {
   };
 
   return (
-    <div className="flex h-screen bg-zinc-50 text-zinc-900 overflow-hidden">
+    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
       <AdminSidebar user={user} />
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Notification Toast */}
         {notification.show && (
-          <div className={`fixed top-20 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg animate-slide-in ${
+          <div className={`fixed top-20 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg ${
             notification.type === "success" ? "bg-emerald-500 text-white" : "bg-red-500 text-white"
           }`}>
             {notification.type === "success" ? <Check size={18} /> : <AlertCircle size={18} />}
@@ -232,35 +233,23 @@ const AdminResponders = () => {
           </div>
         )}
 
-        {/* Top Navbar */}
-        <header className="h-16 bg-white border-b border-zinc-200 px-6 md:px-8 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-4">
-            <div className="p-2 bg-emerald-100 rounded-xl">
-              <Shield className="w-6 h-6 text-emerald-600" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Responder Control</h1>
-              <p className="text-sm text-zinc-500">Manage field responders • {stats.total} responders</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={fetchResponders}
-              className="p-2.5 hover:bg-zinc-100 rounded-xl transition-colors"
-              title="Refresh"
-            >
-              <RefreshCw size={18} className="text-zinc-600" />
-            </button>
+        <PageHeader
+          title="Responder Control"
+          subtitle={`Manage field responders • ${stats.total} responders`}
+          icon={<Shield size={16} />}
+          onRefresh={fetchResponders}
+          loading={loading}
+          user={user}
+        />
+        <div className="px-6 pt-4 flex justify-end">
             <button 
               onClick={handleAddResponder}
-              className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-sm font-medium transition-all shadow-sm"
+              className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold transition-all shadow-sm"
             >
-              <UserPlus size={18} />
+              <UserPlus size={16} />
               Add Responder
             </button>
           </div>
-        </header>
 
         {/* Main Content */}
         <main className="flex-1 p-6 md:p-8 overflow-auto">
@@ -540,17 +529,47 @@ const AdminResponders = () => {
                 </div>
               </div>
 
+              {/* ── Responder Specialization Picker ── */}
               <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1.5">Responder Type</label>
-                <select
-                  className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
-                  value={formData.responder_type}
-                  onChange={(e) => setFormData({ ...formData, responder_type: e.target.value })}
-                >
-                  <option value="Police">Police</option>
-                  <option value="Fire">Fire Department</option>
-                  <option value="Medical">Medical/Ambulance</option>
-                </select>
+                <label className="block text-sm font-medium text-zinc-700 mb-2">
+                  Responder Specialization *
+                </label>
+                <p className="text-xs text-zinc-400 mb-3">Select which incident type this responder handles</p>
+                <div className="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto pr-1">
+                  {[
+                    { value: "Fire Brigade",       emoji: "🔥", label: "Fire / Smoke",          desc: "Fire & explosion emergencies",            color: "hover:border-orange-400 hover:bg-orange-50" },
+                    { value: "Armed Police",        emoji: "🔫", label: "Weapon / Security",     desc: "Armed threats & weapon incidents",        color: "hover:border-red-400 hover:bg-red-50" },
+                    { value: "Ambulance",           emoji: "🩸", label: "Medical / Ambulance",   desc: "Blood, injury & medical emergencies",     color: "hover:border-rose-400 hover:bg-rose-50" },
+                    { value: "Construction Safety", emoji: "🏗️", label: "Construction Site",     desc: "Crane, heavy equipment & site accidents", color: "hover:border-yellow-400 hover:bg-yellow-50" },
+                    { value: "Traffic Police",      emoji: "🚗", label: "Road & Traffic",        desc: "Vehicle collision, bajaj, bus rollover",  color: "hover:border-blue-400 hover:bg-blue-50" },
+                    { value: "Crowd Control",       emoji: "👥", label: "Crowd / Stampede",      desc: "Public gatherings, panic, stampede",      color: "hover:border-purple-400 hover:bg-purple-50" },
+                    { value: "Emergency Patrol",    emoji: "🚑", label: "Emergency Patrol",      desc: "Active emergency vehicle clearance",      color: "hover:border-sky-400 hover:bg-sky-50" },
+                    { value: "Site Inspector",      emoji: "🏗️", label: "Construction Monitor",  desc: "Worker safety & equipment monitoring",    color: "hover:border-amber-400 hover:bg-amber-50" },
+                    { value: "General Responder",   emoji: "⚠️", label: "General / Medium Risk", desc: "Suspicious activity & general patrol",    color: "hover:border-zinc-400 hover:bg-zinc-50" },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, responder_type: opt.value })}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${
+                        formData.responder_type === opt.value
+                          ? "border-emerald-500 bg-emerald-50"
+                          : `border-zinc-200 bg-white ${opt.color}`
+                      }`}
+                    >
+                      <span className="text-xl flex-shrink-0">{opt.emoji}</span>
+                      <div className="min-w-0">
+                        <p className={`text-sm font-semibold ${formData.responder_type === opt.value ? "text-emerald-700" : "text-zinc-800"}`}>
+                          {opt.label}
+                        </p>
+                        <p className="text-xs text-zinc-400 truncate">{opt.desc}</p>
+                      </div>
+                      {formData.responder_type === opt.value && (
+                        <Check size={16} className="text-emerald-600 ml-auto flex-shrink-0" />
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div>

@@ -1,15 +1,17 @@
 // src/pages/ResponderDashboard.js
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import ResponderSidebar from "../layout/ResponderSidebar";
 import MapView from "../components/MapView";
 import axios from "axios";
+import io from "socket.io-client";
 import { 
   Shield, MapPin, Clock, CheckCircle, AlertTriangle, 
   RefreshCw, Navigation, Phone, Eye, Activity,
-  X, Calendar, Users, Bell, TrendingUp
+  X, Calendar, Users, Bell, TrendingUp, BellRing
 } from "lucide-react";
 
 const API_URL = "http://localhost:5000/api";
+const SOCKET_URL = "http://localhost:5000";
 
 const ResponderDashboard = () => {
   const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -20,6 +22,8 @@ const ResponderDashboard = () => {
   const [showModal, setShowModal] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [notification, setNotification] = useState({ show: false, message: "", type: "" });
+  const [assignAlert, setAssignAlert] = useState(null);
+  const socketRef = useRef(null);
 
   // Fetch incidents assigned to this responder
   const fetchIncidents = async () => {
@@ -45,9 +49,31 @@ const ResponderDashboard = () => {
 
   useEffect(() => {
     fetchIncidents();
-    // Refresh every 30 seconds
     const interval = setInterval(fetchIncidents, 30000);
-    return () => clearInterval(interval);
+
+    // Socket — listen for incident-assigned events
+    const socket = io(SOCKET_URL, { transports: ["websocket", "polling"] });
+    socketRef.current = socket;
+
+    socket.on("incident-assigned", (incident) => {
+      // Support both camelCase (normalized) and snake_case (raw DB) payloads
+      const raw = incident.assignedTypes ?? incident.assigned_to_types ?? "[]";
+      let types = [];
+      try { types = Array.isArray(raw) ? raw : JSON.parse(raw); } catch {}
+
+      const myType = user.responder_type || "";
+      // Show alert if: responder has no type set, OR their type is in the assigned list
+      if (!myType || types.includes(myType)) {
+        setAssignAlert({ ...incident, assignedTypes: types });
+        fetchIncidents();
+        try { new Audio("/alert.mp3").play().catch(() => {}); } catch {}
+      }
+    });
+
+    return () => {
+      clearInterval(interval);
+      socket.disconnect();
+    };
   }, [user.id]);
 
   const showNotification = (message, type) => {
@@ -151,6 +177,95 @@ const ResponderDashboard = () => {
           </div>
         )}
 
+        {/* 🚨 Incident Assigned Alert Banner */}
+        {assignAlert && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl shadow-2xl border-2 border-red-500 w-full max-w-md mx-4 overflow-hidden animate-bounce-in">
+              {/* Header */}
+              <div className="bg-red-600 px-5 py-4 flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center flex-shrink-0 animate-pulse">
+                  <BellRing size={22} className="text-white" />
+                </div>
+                <div className="flex-1">
+                  <p className="text-white font-bold text-base">🚨 Incident Assigned to You</p>
+                  <p className="text-red-200 text-xs">Immediate response required</p>
+                </div>
+                <button onClick={() => setAssignAlert(null)} className="text-white/60 hover:text-white">
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="px-5 py-4 space-y-3">
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+                  <p className="text-sm font-semibold text-zinc-900 leading-snug">
+                    {assignAlert.decision || "New Incident Detected"}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200">
+                    <p className="text-zinc-400 mb-0.5">Severity</p>
+                    <p className={`font-bold ${
+                      assignAlert.severity === "Critical Emergency" ? "text-red-600"
+                      : assignAlert.severity === "Medium Risk" ? "text-amber-600"
+                      : "text-emerald-600"
+                    }`}>{assignAlert.severity || "Unknown"}</p>
+                  </div>
+                  <div className="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200">
+                    <p className="text-zinc-400 mb-0.5">Category</p>
+                    <p className="font-bold text-zinc-800">{assignAlert.incidentCategory || "General"}</p>
+                  </div>
+                  <div className="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200">
+                    <p className="text-zinc-400 mb-0.5">Location</p>
+                    <p className="font-bold text-zinc-800 truncate">{assignAlert.location || "Unknown"}</p>
+                  </div>
+                  <div className="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200">
+                    <p className="text-zinc-400 mb-0.5">Assigned by</p>
+                    <p className="font-bold text-zinc-800 capitalize">{assignAlert.assignedBy || "system"}</p>
+                  </div>
+                </div>
+
+                {/* Assigned teams */}
+                <div>
+                  <p className="text-xs text-zinc-400 mb-1.5">Teams dispatched</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(Array.isArray(assignAlert.assignedTypes)
+                      ? assignAlert.assignedTypes
+                      : JSON.parse(assignAlert.assignedTypes || "[]")
+                    ).map(t => (
+                      <span key={t} className="text-xs bg-blue-100 text-blue-700 font-semibold px-2.5 py-1 rounded-full border border-blue-200">
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {assignAlert.notes && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5">
+                    <p className="text-xs text-amber-600 font-semibold mb-0.5">Emergency Notes</p>
+                    <p className="text-xs text-zinc-700">{assignAlert.notes}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="px-5 pb-5 flex gap-2">
+                <button
+                  onClick={() => setAssignAlert(null)}
+                  className="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2">
+                  <CheckCircle size={15} /> Acknowledge
+                </button>
+                <button
+                  onClick={() => setAssignAlert(null)}
+                  className="px-4 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-600 rounded-xl text-sm font-bold transition-colors">
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Top Navbar */}
         <header className="h-16 bg-white border-b border-zinc-200 px-6 flex items-center justify-between shadow-sm">
           <div className="flex items-center gap-4">
@@ -159,7 +274,24 @@ const ResponderDashboard = () => {
             </div>
             <div>
               <h1 className="text-2xl font-semibold tracking-tight">Responder Dashboard</h1>
-              <p className="text-sm text-zinc-500">Field Operations • Real-time Monitoring</p>
+              <div className="flex items-center gap-2 mt-0.5">
+                <p className="text-sm text-zinc-500">Field Operations • Real-time Monitoring</p>
+                {user?.responder_type && (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
+                    {{
+                      "Fire Brigade":       "🔥",
+                      "Armed Police":       "🔫",
+                      "Ambulance":          "🩸",
+                      "Construction Safety":"🏗️",
+                      "Traffic Police":     "🚗",
+                      "Crowd Control":      "👥",
+                      "Emergency Patrol":   "🚑",
+                      "Site Inspector":     "🏗️",
+                      "General Responder":  "⚠️",
+                    }[user.responder_type] || "🛡️"} {user.responder_type}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 

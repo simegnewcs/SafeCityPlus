@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 ultralytics
 python-multipart
 pillow
@@ -7,4 +7,6 @@ opencv-python
 psutil
 moviepy
 numpy
+websockets
+httpx
 

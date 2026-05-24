@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { 
   View, Text, TouchableOpacity, StyleSheet, 
-  Alert, ActivityIndicator, ScrollView 
+  Alert, ActivityIndicator, ScrollView, Modal 
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { User, Phone, LogOut, Shield, Calendar, Award, FileText, CheckCircle, Clock, UserX } from 'lucide-react-native';
+import { User, Phone, Mail, LogOut, Shield, Calendar, Award, FileText, CheckCircle, Clock, UserX } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 
@@ -61,6 +61,8 @@ export default function ProfileScreen() {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isGuest, setIsGuest] = useState(false);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [showGuestModal, setShowGuestModal] = useState(false);
   const [stats, setStats] = useState({
     totalReports: 0,
     resolvedReports: 0,
@@ -73,15 +75,18 @@ export default function ProfileScreen() {
   }, []);
 
   const loadUserData = async () => {
-    const guest = await isGuestMode();
-    setIsGuest(guest);
-    
-    if (!guest) {
-      const userData = await getCurrentUser();
+    const userData = await getCurrentUser();
+    const isLoggedIn = await AsyncStorage.getItem('isLoggedIn');
+
+    if (isLoggedIn === 'true' && userData) {
+      // Properly logged in — clear any stale guest flag
+      await AsyncStorage.removeItem('isGuest');
+      setIsGuest(false);
       setUser(userData);
-      if (userData) {
-        loadUserStats(userData.id);
-      }
+      loadUserStats(userData.id);
+    } else {
+      const guest = await isGuestMode();
+      setIsGuest(guest);
     }
     setLoading(false);
   };
@@ -106,42 +111,9 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleLogout = () => {
-    Alert.alert(
-      'Logout',
-      'Are you sure you want to logout?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Logout', 
-          style: 'destructive',
-          onPress: async () => {
-            await logout(router);
-          }
-        }
-      ]
-    );
-  };
+  const handleLogout = () => setShowLogoutModal(true);
 
-  const handleExitGuestMode = () => {
-    Alert.alert(
-      'Exit Guest Mode',
-      'Would you like to create an account or login to save your reports?',
-      [
-        { text: 'Stay Guest', style: 'cancel' },
-        { 
-          text: 'Login', 
-          onPress: async () => {
-            await exitGuestMode(router);
-          }
-        },
-        { 
-          text: 'Register', 
-          onPress: () => router.push('/register')
-        }
-      ]
-    );
-  };
+  const handleExitGuestMode = () => setShowGuestModal(true);
 
   if (loading) {
     return (
@@ -153,6 +125,46 @@ export default function ProfileScreen() {
       </LinearGradient>
     );
   }
+
+  const GuestModal = () => (
+    <Modal transparent animationType="fade" visible={showGuestModal} onRequestClose={() => setShowGuestModal(false)}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalBox}>
+          <UserX size={32} color="#f59e0b" style={{ marginBottom: 12 }} />
+          <Text style={styles.modalTitle}>Exit Guest Mode</Text>
+          <Text style={styles.modalMessage}>Create an account or login to save your reports and access full features.</Text>
+          <View style={styles.modalButtons}>
+            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setShowGuestModal(false)}>
+              <Text style={styles.modalCancelText}>Stay Guest</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.modalConfirmBtn, { backgroundColor: '#f59e0b' }]} onPress={async () => { setShowGuestModal(false); await exitGuestMode(router); }}>
+              <Text style={styles.modalConfirmText}>Login</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const LogoutModal = () => (
+    <Modal transparent animationType="fade" visible={showLogoutModal} onRequestClose={() => setShowLogoutModal(false)}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalBox}>
+          <LogOut size={32} color="#ef4444" style={{ marginBottom: 12 }} />
+          <Text style={styles.modalTitle}>Logout</Text>
+          <Text style={styles.modalMessage}>Are you sure you want to logout?</Text>
+          <View style={styles.modalButtons}>
+            <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setShowLogoutModal(false)}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.modalConfirmBtn} onPress={async () => { setShowLogoutModal(false); await logout(router); }}>
+              <Text style={styles.modalConfirmText}>Logout</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
 
   // Guest Mode View
   if (isGuest) {
@@ -205,6 +217,7 @@ export default function ProfileScreen() {
 
           <View style={styles.footer} />
         </ScrollView>
+        <GuestModal />
       </LinearGradient>
     );
   }
@@ -223,6 +236,10 @@ export default function ProfileScreen() {
             <Text style={styles.roleText}>{user?.role || 'Citizen'}</Text>
           </View>
           <View style={styles.phoneContainer}>
+            <Mail size={14} color="#64748b" />
+            <Text style={styles.phone}>{user?.email || 'No email set'}</Text>
+          </View>
+          <View style={[styles.phoneContainer, { marginTop: 4 }]}>
             <Phone size={14} color="#64748b" />
             <Text style={styles.phone}>{user?.phone || 'No phone number'}</Text>
           </View>
@@ -254,6 +271,11 @@ export default function ProfileScreen() {
           </View>
           <View style={styles.divider} />
           <View style={styles.infoRow}>
+            <Mail size={20} color="#64748b" />
+            <Text style={styles.infoText}>Email: {user?.email || 'Not set'}</Text>
+          </View>
+          <View style={styles.divider} />
+          <View style={styles.infoRow}>
             <Phone size={20} color="#64748b" />
             <Text style={styles.infoText}>Phone: {user?.phone || 'Not set'}</Text>
           </View>
@@ -282,6 +304,7 @@ export default function ProfileScreen() {
 
         <View style={styles.footer} />
       </ScrollView>
+      <LogoutModal />
     </LinearGradient>
   );
 }
@@ -325,5 +348,15 @@ const styles = StyleSheet.create({
   logoutText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   upgradeButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#E63939', marginHorizontal: 20, padding: 15, borderRadius: 12, gap: 10, marginBottom: 15 },
   upgradeButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  footer: { height: 20 }
+  footer: { height: 20 },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', padding: 30 },
+  modalBox: { backgroundColor: '#1e293b', borderRadius: 20, padding: 28, width: '100%', alignItems: 'center', borderWidth: 1, borderColor: '#334155' },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: '#fff', marginBottom: 8 },
+  modalMessage: { fontSize: 14, color: '#94a3b8', textAlign: 'center', marginBottom: 24 },
+  modalButtons: { flexDirection: 'row', gap: 12, width: '100%' },
+  modalCancelBtn: { flex: 1, paddingVertical: 13, borderRadius: 12, borderWidth: 1, borderColor: '#334155', alignItems: 'center' },
+  modalCancelText: { color: '#94a3b8', fontWeight: '600', fontSize: 15 },
+  modalConfirmBtn: { flex: 1, paddingVertical: 13, borderRadius: 12, backgroundColor: '#ef4444', alignItems: 'center' },
+  modalConfirmText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
 });

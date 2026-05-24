@@ -1,6 +1,7 @@
 // src/pages/AdminAnalytics.js
 import React, { useState, useEffect, useMemo } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
+import PageHeader from "../layout/PageHeader";
 import { 
   TrendingUp, AlertTriangle, Clock, Users, 
   Calendar, MapPin, Activity, RefreshCw, Download,
@@ -179,12 +180,15 @@ const AdminAnalytics = () => {
 
   if (loading && incidents.length === 0) {
     return (
-      <div className="flex h-screen bg-zinc-50">
+      <div className="flex h-screen bg-slate-50">
         <AdminSidebar user={user} />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center">
-            <div className="animate-spin w-8 h-8 border-4 border-emerald-600 border-t-transparent rounded-full mx-auto mb-4"></div>
-            <p className="text-zinc-600">Loading analytics...</p>
+            <div className="relative w-14 h-14 mx-auto mb-5">
+              <div className="w-14 h-14 border-4 border-indigo-100 rounded-full"></div>
+              <div className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+            <p className="text-slate-500 font-medium">Loading analytics…</p>
           </div>
         </div>
       </div>
@@ -192,41 +196,18 @@ const AdminAnalytics = () => {
   }
 
   return (
-    <div className="flex h-screen bg-zinc-50 text-zinc-900 overflow-hidden">
+    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
       <AdminSidebar user={user} />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Top Navbar */}
-        <header className="h-16 bg-white border-b border-zinc-200 px-6 md:px-8 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-4">
-            <div className="p-2 bg-emerald-100 rounded-xl">
-              <TrendingUp className="w-6 h-6 text-emerald-600" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Analytics Dashboard</h1>
-              <p className="text-sm text-zinc-500">Real-time insights from incidents</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="hidden md:block text-xs text-zinc-400">
-              Last updated: {lastUpdated.toLocaleTimeString()}
-            </div>
-            <button 
-              onClick={handleRefresh}
-              className="p-2.5 hover:bg-zinc-100 rounded-xl transition-colors"
-            >
-              <RefreshCw size={18} className="text-zinc-600" />
-            </button>
-            <button 
-              onClick={handleExport}
-              className="p-2.5 hover:bg-zinc-100 rounded-xl transition-colors"
-            >
-              <Download size={18} className="text-zinc-600" />
-            </button>
-          </div>
-        </header>
-
+        <PageHeader
+          title="Analytics Dashboard"
+          subtitle="Real-time insights from incidents"
+          icon={<TrendingUp size={16} />}
+          onRefresh={handleRefresh}
+          loading={loading}
+          user={user}
+        />
         {/* Main Content */}
         <main className="flex-1 p-6 md:p-8 overflow-auto">
           {/* Stats Grid */}

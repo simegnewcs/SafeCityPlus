@@ -1,7 +1,8 @@
 // src/pages/ResponderIncidents.js
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import ResponderSidebar from "../layout/ResponderSidebar";
 import axios from "axios";
+import io from "socket.io-client";
 import { 
   AlertTriangle, Clock, CheckCircle, MapPin, 
   RefreshCw, Eye, Navigation, Calendar,
@@ -10,6 +11,7 @@ import {
 } from "lucide-react";
 
 const API_URL = "http://localhost:5000/api";
+const SOCKET_URL = "http://localhost:5000";
 
 const ResponderIncidents = () => {
   const user = JSON.parse(localStorage.getItem("user") || "{}");
@@ -79,10 +81,26 @@ const ResponderIncidents = () => {
     }
   };
 
+  const socketRef = useRef(null);
+
   useEffect(() => {
     fetchIncidents();
     const interval = setInterval(fetchIncidents, 30000);
-    return () => clearInterval(interval);
+
+    // Real-time: listen for AI-assigned incidents that match this responder's type
+    const socket = io(SOCKET_URL, { transports: ["websocket", "polling"] });
+    socket.on("incident-assigned", (incident) => {
+      const raw = incident.assignedTypes ?? incident.assigned_to_types ?? "[]";
+      let types = [];
+      try { types = Array.isArray(raw) ? raw : JSON.parse(raw); } catch {}
+      if (!user.responder_type || types.includes(user.responder_type)) {
+        showNotification(`🚨 New incident assigned: ${incident.decision}`, "error");
+        fetchIncidents();
+      }
+    });
+    socketRef.current = socket;
+
+    return () => { clearInterval(interval); socket.disconnect(); };
   }, [user.id]);
 
   const showNotification = (message, type) => {

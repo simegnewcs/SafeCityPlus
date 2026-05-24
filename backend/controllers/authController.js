@@ -4,22 +4,22 @@ const bcrypt = require('bcryptjs');
 // 1. መመዝገቢያ (Register)
 exports.register = async (req, res) => {
     try {
-        const { fullName, phone, password } = req.body;
+        const { fullName, email, phone, password } = req.body;
 
         if (!fullName || !phone || !password) {
-            return res.status(400).json({ success: false, message: "እባክዎ ሁሉንም መረጃዎች በትክክል ይሙሉ!" });
+            return res.status(400).json({ success: false, message: "Please fill in all required fields." });
         }
 
         const [existingUser] = await db.execute('SELECT * FROM users WHERE phone = ?', [phone]);
         if (existingUser.length > 0) {
-            return res.status(400).json({ success: false, message: "ይህ ስልክ ቁጥር ቀድሞ ተመዝግቧል!" });
+            return res.status(400).json({ success: false, message: "This phone number is already registered." });
         }
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        const sql = 'INSERT INTO users (full_name, phone, password) VALUES (?, ?, ?)';
-        await db.execute(sql, [fullName, phone, hashedPassword]);
+        const sql = 'INSERT INTO users (full_name, email, phone, password) VALUES (?, ?, ?, ?)';
+        await db.execute(sql, [fullName, email || null, phone, hashedPassword]);
 
         return res.status(201).json({ success: true, message: "በስኬት ተመዝግበዋል!" });
 
@@ -32,18 +32,21 @@ exports.register = async (req, res) => {
 // 2. መግቢያ (Login) - አዲስ የተጨመረ
 exports.login = async (req, res) => {
     try {
-        const { phone, password } = req.body;
+        const { email, phone, password } = req.body;
+        const identifier = email || phone;
 
-        // ሀ. ስልክ እና ፓስወርድ መኖሩን ቼክ ማድረግ
-        if (!phone || !password) {
-            return res.status(400).json({ success: false, message: "እባክዎ ስልክ ቁጥር እና ፓስወርድ ያስገቡ!" });
+        if (!identifier || !password) {
+            return res.status(400).json({ success: false, message: "Please enter your email and password." });
         }
 
-        // ለ. ተጠቃሚውን በስልክ ቁጥሩ መፈለግ
-        const [users] = await db.execute('SELECT * FROM users WHERE phone = ?', [phone]);
-        
+        // Try email first, fall back to phone for existing accounts
+        let [users] = await db.execute('SELECT * FROM users WHERE email = ?', [identifier]);
         if (users.length === 0) {
-            return res.status(401).json({ success: false, message: "ያልተመዘገበ ስልክ ቁጥር ወይም የተሳሳተ ፓስወርድ!" });
+            [users] = await db.execute('SELECT * FROM users WHERE phone = ?', [identifier]);
+        }
+
+        if (users.length === 0) {
+            return res.status(401).json({ success: false, message: "Invalid email or password." });
         }
 
         const user = users[0];
@@ -53,7 +56,7 @@ exports.login = async (req, res) => {
         const isMatch = await bcrypt.compare(password, user.password);
 
         if (!isMatch) {
-            return res.status(401).json({ success: false, message: "ያልተመዘገበ ስልክ ቁጥር ወይም የተሳሳተ ፓስወርድ!" });
+            return res.status(401).json({ success: false, message: "Invalid email or password." });
         }
 
         // መ. ስኬታማ ከሆነ የተጠቃሚውን መረጃ መመለስ (ፓስወርዱን ሳንጨምር)
@@ -63,8 +66,10 @@ exports.login = async (req, res) => {
             user: {
                 id: user.id,
                 fullName: user.full_name,
+                email: user.email,
                 phone: user.phone,
-                role: user.role
+                role: user.role,
+                responder_type: user.responder_type || null
             }
         });
 

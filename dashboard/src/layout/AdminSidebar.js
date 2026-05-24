@@ -40,14 +40,14 @@ const AdminSidebar = ({ user, onClose }) => {
       {/* Header */}
       <div className="p-6 border-b border-zinc-800 flex items-center justify-between">
         <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-full overflow-hidden flex items-center justify-center bg-white/10 border-2 border-white/20 flex-shrink-0">
+            <img src="/safecityplus.png" alt="SafeCity+" className="w-full h-full object-cover" />
+          </div>
           {!isCollapsed && (
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white">SafeCity+</h1>
               <p className="text-xs text-zinc-500 -mt-1">Admin Portal</p>
             </div>
-          )}
-          {isCollapsed && (
-            <span className="text-2xl font-bold text-indigo-500">SC</span>
           )}
         </div>
 

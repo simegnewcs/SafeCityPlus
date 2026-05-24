@@ -7,7 +7,7 @@ const bcrypt = require('bcryptjs');
 router.get('/', async (req, res) => {
     try {
         const [users] = await db.execute(`
-            SELECT id, full_name, phone, role, created_at 
+            SELECT id, full_name, email, phone, role, responder_type, status, created_at 
             FROM users 
             ORDER BY created_at DESC
         `);
@@ -23,7 +23,7 @@ router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const [users] = await db.execute(`
-            SELECT id, full_name, phone, role, created_at 
+            SELECT id, full_name, email, phone, role, responder_type, status, created_at 
             FROM users 
             WHERE id = ?
         `, [id]);
@@ -41,7 +41,7 @@ router.get('/:id', async (req, res) => {
 // Create new user
 router.post('/register', async (req, res) => {
     try {
-        const { fullName, phone, password, role } = req.body;
+        const { fullName, email, phone, password, role, responder_type } = req.body;
         
         // Check if user already exists
         const [existing] = await db.execute(
@@ -62,9 +62,9 @@ router.post('/register', async (req, res) => {
         
         // Insert user
         const [result] = await db.execute(`
-            INSERT INTO users (full_name, phone, password, role) 
-            VALUES (?, ?, ?, ?)
-        `, [fullName, phone, hashedPassword, role || 'User']);
+            INSERT INTO users (full_name, email, phone, password, role, responder_type) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        `, [fullName, email || null, phone, hashedPassword, role || 'User', responder_type || null]);
         
         res.json({ 
             success: true, 
@@ -81,10 +81,10 @@ router.post('/register', async (req, res) => {
 router.put('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const { fullName, phone, password, role } = req.body;
+        const { fullName, email, phone, password, role, responder_type, status } = req.body;
         
-        let query = 'UPDATE users SET full_name = ?, phone = ?, role = ?';
-        let params = [fullName, phone, role];
+        let query = 'UPDATE users SET full_name = ?, email = ?, phone = ?, role = ?, responder_type = ?, status = ?';
+        let params = [fullName, email || null, phone, role, responder_type || null, status || null];
         
         if (password) {
             const salt = await bcrypt.genSalt(10);
@@ -130,12 +130,14 @@ router.get('/stats/summary', async (req, res) => {
         const [total] = await db.execute('SELECT COUNT(*) as count FROM users');
         const [admin] = await db.execute('SELECT COUNT(*) as count FROM users WHERE role = "Admin"');
         const [responder] = await db.execute('SELECT COUNT(*) as count FROM users WHERE role = "Responder"');
+        const [superResponder] = await db.execute('SELECT COUNT(*) as count FROM users WHERE role = "SuperResponder"');
         const [user] = await db.execute('SELECT COUNT(*) as count FROM users WHERE role = "User"');
         
         res.json({
             total: total[0].count,
             admin: admin[0].count,
             responder: responder[0].count,
+            superResponder: superResponder[0].count,
             user: user[0].count
         });
     } catch (error) {

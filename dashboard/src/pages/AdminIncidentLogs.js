@@ -1,6 +1,7 @@
 // src/pages/AdminIncidentLogs.js
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
+import PageHeader from "../layout/PageHeader";
 import { 
   Search, RefreshCw, Eye, Download, X, AlertTriangle, 
   ChevronLeft, ChevronRight, Play, Pause, Volume2, 
@@ -144,25 +145,18 @@ const AdminIncidentLogs = () => {
   };
 
   return (
-    <div className="flex h-screen bg-zinc-50 text-zinc-900 overflow-hidden">
+    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
       <AdminSidebar user={user} />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Top Navbar */}
-        <header className="h-16 bg-white border-b border-zinc-200 px-8 flex items-center justify-between shadow-sm">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Incident Logs</h1>
-            <p className="text-sm text-zinc-500">Real-time records • {filteredIncidents.length} incidents</p>
-          </div>
-
-          <button 
-            onClick={fetchIncidents}
-            className="flex items-center gap-2 px-5 py-2 bg-white border border-zinc-300 hover:border-emerald-300 rounded-2xl text-sm font-medium transition-all"
-          >
-            <RefreshCw size={18} className="text-emerald-600" />
-            Refresh
-          </button>
-        </header>
+        <PageHeader
+          title="Incident Logs"
+          subtitle={`Real-time records • ${filteredIncidents.length} incidents`}
+          icon={<Search size={16} />}
+          onRefresh={fetchIncidents}
+          loading={loading}
+          user={user}
+        />
 
         {/* Main Content */}
         <main className="flex-1 p-6 md:p-8 overflow-auto">

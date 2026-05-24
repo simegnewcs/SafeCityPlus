@@ -1,14 +1,22 @@
 import React, { useState } from 'react';
 import { 
   View, Text, TextInput, TouchableOpacity, 
-  StyleSheet, Alert, ScrollView, ActivityIndicator 
+  StyleSheet, Alert, ScrollView, ActivityIndicator,
+  KeyboardAvoidingView, Platform
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { User, Phone, Lock, ArrowRight } from 'lucide-react-native';
+import { User, Phone, Mail, Lock, ArrowRight } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const API_URL = 'http://10.161.68.44:5000';
+
+const getChecks = (pwd: string) => ([
+  { label: 'At least 8 characters',         pass: pwd.length >= 8 },
+  { label: 'One uppercase letter (A-Z)',     pass: /[A-Z]/.test(pwd) },
+  { label: 'One number (0-9)',               pass: /[0-9]/.test(pwd) },
+  { label: 'One special character (!@#...)', pass: /[^A-Za-z0-9]/.test(pwd) },
+]);
 
 // InputBox Component
 const InputBox = ({ icon, placeholder, secure, keyboardType, onChange }: any) => (
@@ -27,13 +35,15 @@ const InputBox = ({ icon, placeholder, secure, keyboardType, onChange }: any) =>
 );
 
 export default function RegisterScreen() {
-  const [formData, setFormData] = useState({ fullName: '', phone: '', password: '' });
+  const [formData, setFormData] = useState({ fullName: '', email: '', phone: '', password: '' });
+  const [pwdTouched, setPwdTouched] = useState(false);
   const [loading, setLoading] = useState(false);
+  const checks = getChecks(formData.password);
   const router = useRouter();
 
   const handleRegister = async () => {
-    if (!formData.fullName || !formData.phone || !formData.password) {
-      Alert.alert("Error", "እባክዎ ሁሉንም ቦታዎች ይሙሉ");
+    if (!formData.fullName || !formData.email || !formData.phone || !formData.password) {
+      Alert.alert("Error", "Please fill in all fields");
       return;
     }
 
@@ -58,7 +68,7 @@ export default function RegisterScreen() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
-            phone: formData.phone, 
+            email: formData.email, 
             password: formData.password 
           }),
         });
@@ -97,7 +107,12 @@ export default function RegisterScreen() {
 
   return (
     <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
           <View style={styles.logoCircle}>
             <User size={40} color="#3b82f6" />
@@ -113,17 +128,43 @@ export default function RegisterScreen() {
             onChange={(val: string) => setFormData({...formData, fullName: val})} 
           />
           <InputBox 
+            icon={<Mail size={20} color="#64748b"/>} 
+            placeholder="Email Address" 
+            keyboardType="email-address" 
+            onChange={(val: string) => setFormData({...formData, email: val})} 
+          />
+          <InputBox 
             icon={<Phone size={20} color="#64748b"/>} 
             placeholder="Phone Number" 
             keyboardType="phone-pad" 
             onChange={(val: string) => setFormData({...formData, phone: val})} 
           />
-          <InputBox 
-            icon={<Lock size={20} color="#64748b"/>} 
-            placeholder="Password" 
-            secure 
-            onChange={(val: string) => setFormData({...formData, password: val})} 
-          />
+          <View>
+            <View style={styles.inputContainer}>
+              <Lock size={20} color="#64748b"/>
+              <TextInput
+                style={styles.input}
+                placeholder="Password"
+                placeholderTextColor="#64748b"
+                secureTextEntry
+                autoCapitalize="none"
+                onChangeText={(v) => setFormData({...formData, password: v})}
+                onBlur={() => setPwdTouched(true)}
+              />
+            </View>
+            {pwdTouched && formData.password.length > 0 && (
+              <View style={styles.checkList}>
+                {checks.map((c, i) => (
+                  <View key={i} style={styles.checkRow}>
+                    <View style={[styles.checkDot, { backgroundColor: c.pass ? '#10b981' : '#334155' }]}>
+                      {c.pass && <Text style={styles.checkTick}>✓</Text>}
+                    </View>
+                    <Text style={[styles.checkLabel, { color: c.pass ? '#10b981' : '#64748b' }]}>{c.label}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
 
           <TouchableOpacity style={styles.btn} onPress={handleRegister} disabled={loading}>
             {loading ? <ActivityIndicator color="#fff" /> : (
@@ -139,6 +180,7 @@ export default function RegisterScreen() {
           <Text style={styles.linkText}>Already have an account? <Text style={{color: '#3b82f6'}}>Login</Text></Text>
         </TouchableOpacity>
       </ScrollView>
+      </KeyboardAvoidingView>
     </LinearGradient>
   );
 }
@@ -155,5 +197,10 @@ const styles = StyleSheet.create({
   input: { flex: 1, color: '#fff', marginLeft: 15, fontSize: 16 },
   btn: { backgroundColor: '#3b82f6', height: 60, borderRadius: 15, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 20 },
   btnText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  linkText: { color: '#64748b', textAlign: 'center', fontSize: 14 }
+  linkText: { color: '#64748b', textAlign: 'center', fontSize: 14 },
+  checkList: { marginTop: 10, gap: 6, backgroundColor: '#0f172a', borderRadius: 12, padding: 12 },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  checkDot: { width: 20, height: 20, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  checkTick: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  checkLabel: { fontSize: 13 },
 });

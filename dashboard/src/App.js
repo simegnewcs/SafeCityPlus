@@ -9,7 +9,9 @@ import {
 
 // Auth Pages
 import Login from "./auth/Login";
-import Register from "./auth/Register";
+
+// Landing Page
+import HomePage from "./pages/HomePage";
 
 // Admin Pages
 import AdminDashboard from "./pages/AdminDashboard";
@@ -27,6 +29,11 @@ import ResponderIncidents from "./pages/ResponderIncidents";
 import ResponderCCTV from "./pages/ResponderCCTV";
 import ResponderSettings from "./pages/ResponderSettings";
 
+// Super Responder Pages
+import SuperResponderDashboard from "./pages/SuperResponderDashboard";
+import SuperResponderIncidents from "./pages/SuperResponderIncidents";
+import SuperResponderSettings from "./pages/SuperResponderSettings";
+
 function App() {
   const user = JSON.parse(localStorage.getItem("user"));
 
@@ -35,7 +42,7 @@ function App() {
       <Routes>
         {/* ================= AUTH ================= */}
         <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
+        <Route path="/register" element={<Navigate to="/login" />} />
 
         {/* 🔥 Redirect old admin route */}
         <Route
@@ -155,17 +162,37 @@ function App() {
           }
         />
 
+        {/* ================= SUPER RESPONDER ROUTES ================= */}
+        <Route
+          path="/super-responder/dashboard"
+          element={user?.role === "SuperResponder" ? <SuperResponderDashboard /> : <Navigate to="/login" />}
+        />
+        <Route
+          path="/super-responder/incidents"
+          element={user?.role === "SuperResponder" ? <SuperResponderIncidents /> : <Navigate to="/login" />}
+        />
+        <Route
+          path="/super-responder/cctv"
+          element={user?.role === "SuperResponder" ? <ResponderCCTV /> : <Navigate to="/login" />}
+        />
+        <Route
+          path="/super-responder/settings"
+          element={user?.role === "SuperResponder" ? <SuperResponderSettings /> : <Navigate to="/login" />}
+        />
+
         {/* ================= DEFAULT ROUTE ================= */}
         <Route
           path="/"
           element={
-            <Navigate
-              to={
-                user?.role === "Admin"
-                  ? "/admin/dashboard"
-                  : "/responder/dashboard"
-              }
-            />
+            user?.role === "Admin" ? (
+              <Navigate to="/admin/dashboard" />
+            ) : user?.role === "SuperResponder" ? (
+              <Navigate to="/super-responder/dashboard" />
+            ) : user?.role === "Responder" ? (
+              <Navigate to="/responder/dashboard" />
+            ) : (
+              <HomePage />
+            )
           }
         />
 

@@ -33,10 +33,21 @@ const LiveStreamViewer = () => {
 
   const connectSocket = () => {
     try {
+      // Get user token from localStorage
+      const userData = JSON.parse(localStorage.getItem('user') || '{}');
+      const authToken = userData?.id ? String(userData.id) : null;
+      
+      if (authToken) {
+        console.log('🔐 Authenticating socket with user ID:', authToken);
+      }
+      
       const socket = io(SOCKET_URL, {
         transports: ['websocket', 'polling'],
         reconnection: true,
         reconnectionAttempts: 5,
+        auth: {
+          token: authToken
+        },
         reconnectionDelay: 2000
       });
       

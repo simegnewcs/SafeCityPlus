@@ -1,6 +1,7 @@
 // src/pages/AdminUsers.js
 import React, { useEffect, useState, useMemo } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
+import PageHeader from "../layout/PageHeader";
 import axios from "axios";
 import { 
   Users, Search, UserPlus, Shield, Edit2, Trash2, 
@@ -20,9 +21,11 @@ const AdminUsers = () => {
   const [editingUser, setEditingUser] = useState(null);
   const [formData, setFormData] = useState({
     fullName: "",
+    email: "",
     phone: "",
     password: "",
-    role: "User"
+    role: "User",
+    responder_type: ""
   });
   const [showPassword, setShowPassword] = useState(false);
   const [notification, setNotification] = useState({ show: false, message: "", type: "" });
@@ -105,9 +108,11 @@ const AdminUsers = () => {
     setEditingUser(null);
     setFormData({
       fullName: "",
+      email: "",
       phone: "",
       password: "",
-      role: "User"
+      role: "User",
+      responder_type: ""
     });
     setShowModal(true);
   };
@@ -116,9 +121,11 @@ const AdminUsers = () => {
     setEditingUser(user);
     setFormData({
       fullName: user.full_name,
+      email: user.email || "",
       phone: user.phone,
       password: "",
-      role: user.role || "User"
+      role: user.role || "User",
+      responder_type: user.responder_type || ""
     });
     setShowModal(true);
   };
@@ -178,17 +185,19 @@ const AdminUsers = () => {
 
   const getRoleBadgeClass = (role) => {
     switch (role) {
-      case "Admin": return "bg-rose-100 text-rose-700";
-      case "Responder": return "bg-emerald-100 text-emerald-700";
-      default: return "bg-sky-100 text-sky-700";
+      case "Admin":          return "bg-rose-100 text-rose-700";
+      case "SuperResponder": return "bg-orange-100 text-orange-700";
+      case "Responder":      return "bg-emerald-100 text-emerald-700";
+      default:               return "bg-sky-100 text-sky-700";
     }
   };
 
   const getRoleIcon = (role) => {
     switch (role) {
-      case "Admin": return <Shield size={14} />;
-      case "Responder": return <Activity size={14} />;
-      default: return <Users size={14} />;
+      case "Admin":          return <Shield size={14} />;
+      case "SuperResponder": return <Shield size={14} />;
+      case "Responder":      return <Activity size={14} />;
+      default:               return <Users size={14} />;
     }
   };
 
@@ -199,13 +208,13 @@ const AdminUsers = () => {
   };
 
   return (
-    <div className="flex h-screen bg-zinc-50 text-zinc-900 overflow-hidden">
+    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
       <AdminSidebar user={user} />
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Notification Toast */}
         {notification.show && (
-          <div className={`fixed top-20 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg animate-slide-in ${
+          <div className={`fixed top-20 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg ${
             notification.type === "success" ? "bg-emerald-500 text-white" : "bg-red-500 text-white"
           }`}>
             {notification.type === "success" ? <Check size={18} /> : <AlertCircle size={18} />}
@@ -213,35 +222,24 @@ const AdminUsers = () => {
           </div>
         )}
 
-        {/* Top Navbar */}
-        <header className="h-16 bg-white border-b border-zinc-200 px-6 md:px-8 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-4">
-            <div className="p-2 bg-emerald-100 rounded-xl">
-              <Users className="w-6 h-6 text-emerald-600" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Users Management</h1>
-              <p className="text-sm text-zinc-500">Manage system users and permissions</p>
-            </div>
-          </div>
+        <PageHeader
+          title="Users Management"
+          subtitle="Manage system users and permissions"
+          icon={<Users size={16} />}
+          onRefresh={() => { fetchUsers(); fetchStats(); }}
+          loading={loading}
+          user={user}
+        />
 
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => { fetchUsers(); fetchStats(); }}
-              className="p-2.5 hover:bg-zinc-100 rounded-xl transition-colors"
-              title="Refresh"
-            >
-              <RefreshCw size={18} className="text-zinc-600" />
-            </button>
+        <div className="px-6 pt-4 flex justify-end gap-2">
             <button 
               onClick={handleAddUser}
-              className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-sm font-medium transition-all shadow-sm"
+              className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold transition-all shadow-sm"
             >
-              <UserPlus size={18} />
+              <UserPlus size={16} />
               Add New User
             </button>
           </div>
-        </header>
 
         {/* Main Content */}
         <main className="flex-1 p-6 md:p-8 overflow-auto">
@@ -432,9 +430,9 @@ const AdminUsers = () => {
 
       {/* Add/Edit User Modal */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
-          <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-hidden shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="p-6 border-b border-zinc-200 flex items-center justify-between">
+        <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto" onClick={() => setShowModal(false)}>
+          <div className="bg-white rounded-2xl max-w-md w-full my-auto shadow-xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6 border-b border-zinc-200 flex items-center justify-between flex-shrink-0 sticky top-0 bg-white rounded-t-2xl z-10">
               <div>
                 <h2 className="text-xl font-semibold text-zinc-900">
                   {editingUser ? "Edit User" : "Add New User"}
@@ -448,7 +446,7 @@ const AdminUsers = () => {
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="p-6 space-y-5">
+            <form onSubmit={handleSubmit} className="p-6 space-y-5 overflow-y-auto">
               <div>
                 <label className="block text-sm font-medium text-zinc-700 mb-1.5">Full Name *</label>
                 <input
@@ -458,6 +456,17 @@ const AdminUsers = () => {
                   value={formData.fullName}
                   onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
                   placeholder="Enter full name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 mb-1.5">Email Address</label>
+                <input
+                  type="email"
+                  className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  placeholder="Enter email address (optional)"
                 />
               </div>
 
@@ -500,15 +509,58 @@ const AdminUsers = () => {
                 <select
                   className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
                   value={formData.role}
-                  onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+                  onChange={(e) => setFormData({ ...formData, role: e.target.value, responder_type: e.target.value !== 'Responder' ? '' : formData.responder_type })}
                 >
                   <option value="User">User</option>
                   <option value="Responder">Responder</option>
+                  <option value="SuperResponder">Super Responder</option>
                   <option value="Admin">Admin</option>
                 </select>
               </div>
 
-              <div className="flex gap-3 pt-2">
+              {/* Step 2: Responder specialization — shown only when role = Responder */}
+              {formData.role === 'Responder' && (
+                <div className="border border-emerald-200 bg-emerald-50/40 rounded-2xl p-4">
+                  <p className="text-xs font-bold text-emerald-700 uppercase tracking-wide mb-1">Step 2 — Select Specialization</p>
+                  <p className="text-xs text-zinc-400 mb-3">Which incident type will this responder handle?</p>
+                  <div className="grid grid-cols-1 gap-1.5 max-h-56 overflow-y-auto pr-1">
+                    {[
+                      { value: "Fire Brigade",       emoji: "🔥", label: "Fire / Smoke",          desc: "Fire & explosion emergencies" },
+                      { value: "Armed Police",        emoji: "🔫", label: "Weapon / Security",     desc: "Armed threats & weapon incidents" },
+                      { value: "Ambulance",           emoji: "🩸", label: "Medical / Ambulance",   desc: "Blood, injury & medical emergencies" },
+                      { value: "Construction Safety", emoji: "🏗️", label: "Construction Site",     desc: "Crane & heavy equipment accidents" },
+                      { value: "Traffic Police",      emoji: "🚗", label: "Road & Traffic",        desc: "Vehicle collision, bajaj, bus rollover" },
+                      { value: "Crowd Control",       emoji: "👥", label: "Crowd / Stampede",      desc: "Public gatherings, panic, stampede" },
+                      { value: "Emergency Patrol",    emoji: "🚑", label: "Emergency Patrol",      desc: "Active emergency vehicle clearance" },
+                      { value: "Site Inspector",      emoji: "🏗️", label: "Construction Monitor",  desc: "Worker safety monitoring" },
+                      { value: "General Responder",   emoji: "⚠️", label: "General / Medium Risk", desc: "Suspicious activity & general patrol" },
+                    ].map(opt => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, responder_type: opt.value })}
+                        className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl border-2 text-left transition-all ${
+                          formData.responder_type === opt.value
+                            ? 'border-emerald-500 bg-emerald-100'
+                            : 'border-zinc-200 bg-white hover:border-emerald-300 hover:bg-emerald-50/60'
+                        }`}
+                      >
+                        <span className="text-lg flex-shrink-0">{opt.emoji}</span>
+                        <div className="min-w-0">
+                          <p className={`text-xs font-semibold ${formData.responder_type === opt.value ? 'text-emerald-700' : 'text-zinc-800'}`}>{opt.label}</p>
+                          <p className="text-[10px] text-zinc-400 truncate">{opt.desc}</p>
+                        </div>
+                        {formData.responder_type === opt.value && <Check size={14} className="text-emerald-600 ml-auto flex-shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                  {!formData.responder_type && (
+                    <p className="text-[11px] text-amber-600 mt-2 flex items-center gap-1">⚠ Please select a specialization</p>
+                  )}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-2 pb-2 sticky bottom-0 bg-white border-t border-zinc-100 -mx-6 px-6 mt-2">
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}

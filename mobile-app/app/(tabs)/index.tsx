@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, TouchableOpacity, StyleSheet, 
   ScrollView, Image, ActivityIndicator, RefreshControl,
-  Animated, Easing, Dimensions, StatusBar
+  Animated, Easing, Dimensions, StatusBar, Modal
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,6 +21,7 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [notifications, setNotifications] = useState(3);
+  const [showSOSModal, setShowSOSModal] = useState(false);
   
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -234,11 +235,80 @@ export default function HomeScreen() {
             <StatCard icon="checkmark-circle" value={stats.resolved} label="Resolved" color="#10b981" />
           </View> */}
 
+          {/* SOS Modal */}
+          <Modal
+            visible={showSOSModal}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setShowSOSModal(false)}
+          >
+            <TouchableOpacity
+              style={styles.sosModalOverlay}
+              activeOpacity={1}
+              onPress={() => setShowSOSModal(false)}
+            >
+              <TouchableOpacity activeOpacity={1} style={styles.sosModalSheet}>
+                <View style={styles.sosModalHandle} />
+                <Text style={styles.sosModalTitle}>🚨 Report Emergency</Text>
+                <Text style={styles.sosModalSub}>Choose how to report your emergency</Text>
+
+                {/* CCTV — default */}
+                <TouchableOpacity
+                  style={[styles.sosOption, styles.sosOptionDefault]}
+                  onPress={() => { setShowSOSModal(false); router.push('/cctv'); }}
+                >
+                  <View style={[styles.sosOptionIcon, { backgroundColor: 'rgba(59,130,246,0.18)' }]}>
+                    <Ionicons name="videocam" size={26} color="#3b82f6" />
+                  </View>
+                  <View style={styles.sosOptionText}>
+                    <Text style={styles.sosOptionTitle}>CCTV  <Text style={styles.sosDefaultBadge}>DEFAULT</Text></Text>
+                    <Text style={styles.sosOptionDesc}>Report using live CCTV camera feed</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#3b82f6" />
+                </TouchableOpacity>
+
+                {/* Photo */}
+                <TouchableOpacity
+                  style={styles.sosOption}
+                  onPress={() => { setShowSOSModal(false); router.push('/camera?mode=photo'); }}
+                >
+                  <View style={[styles.sosOptionIcon, { backgroundColor: 'rgba(16,185,129,0.15)' }]}>
+                    <Ionicons name="camera" size={26} color="#10b981" />
+                  </View>
+                  <View style={styles.sosOptionText}>
+                    <Text style={styles.sosOptionTitle}>Photo</Text>
+                    <Text style={styles.sosOptionDesc}>Capture a photo of the incident</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#64748b" />
+                </TouchableOpacity>
+
+                {/* Video */}
+                <TouchableOpacity
+                  style={styles.sosOption}
+                  onPress={() => { setShowSOSModal(false); router.push('/camera?mode=video'); }}
+                >
+                  <View style={[styles.sosOptionIcon, { backgroundColor: 'rgba(239,68,68,0.15)' }]}>
+                    <Ionicons name="film" size={26} color="#ef4444" />
+                  </View>
+                  <View style={styles.sosOptionText}>
+                    <Text style={styles.sosOptionTitle}>Video</Text>
+                    <Text style={styles.sosOptionDesc}>Record a video of the incident</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#64748b" />
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.sosModalCancel} onPress={() => setShowSOSModal(false)}>
+                  <Text style={styles.sosModalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </TouchableOpacity>
+            </TouchableOpacity>
+          </Modal>
+
           {/* SOS Emergency Button */}
           <Animated.View style={[styles.sosContainer, { transform: [{ scale: pulseAnim }] }]}>
             <TouchableOpacity 
               style={styles.sosButton} 
-              onPress={() => router.push('/camera')} 
+              onPress={() => setShowSOSModal(true)} 
               activeOpacity={0.9}
             >
               <LinearGradient 
@@ -418,5 +488,21 @@ const styles = StyleSheet.create({
   safetyButton: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 4 },
   safetyButtonText: { color: '#3b82f6', fontSize: 12, fontWeight: '500' },
   
-  loader: { marginTop: 40 }
+  loader: { marginTop: 40 },
+
+  // SOS Modal
+  sosModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  sosModalSheet: { backgroundColor: '#1e293b', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, paddingBottom: 36 },
+  sosModalHandle: { width: 40, height: 4, backgroundColor: '#334155', borderRadius: 2, alignSelf: 'center', marginBottom: 20 },
+  sosModalTitle: { color: '#fff', fontSize: 20, fontWeight: '800', marginBottom: 6 },
+  sosModalSub: { color: '#94a3b8', fontSize: 13, marginBottom: 24 },
+  sosOption: { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#0f172a', borderRadius: 16, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#334155' },
+  sosOptionDefault: { borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.07)' },
+  sosOptionIcon: { width: 48, height: 48, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+  sosOptionText: { flex: 1 },
+  sosOptionTitle: { color: '#fff', fontSize: 15, fontWeight: '700', marginBottom: 2 },
+  sosOptionDesc: { color: '#94a3b8', fontSize: 12 },
+  sosDefaultBadge: { color: '#3b82f6', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  sosModalCancel: { marginTop: 4, alignItems: 'center', padding: 14, borderRadius: 14, backgroundColor: '#0f172a', borderWidth: 1, borderColor: '#334155' },
+  sosModalCancelText: { color: '#94a3b8', fontSize: 15, fontWeight: '600' }
 });

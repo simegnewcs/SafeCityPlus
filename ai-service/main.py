@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import io
@@ -6,8 +6,10 @@ import logging
 import time
 import os
 import tempfile
+import base64
+import json
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from collections import defaultdict
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -91,134 +93,233 @@ if YOLO_AVAILABLE:
         logger.error(f"Failed to load YOLO: {e}")
         YOLO_AVAILABLE = False
 
-# Emergency incident types mapping with severity levels
+# ── Ethiopian-context Emergency Incident Classification ────────────────────────
+# Categories: Road/Traffic, Fire/Explosion, Construction, Industrial,
+#             Environmental/Public Safety, Crowd, Weapons, Medical
+# Objects detected by out of these categories → "Out of Common Incidents"
 EMERGENCY_MAPPING = {
-    # Life-threatening emergencies
-    'person': {
-        'type': 'Person Collapsed (Medical Emergency)',
-        'severity': 'High',
-        'priority': 'High',
-        'weight': 10
-    },
-    'fire': {
-        'type': 'Fire Emergency',
-        'severity': 'Critical',
-        'priority': 'Critical',
-        'weight': 10
-    },
-    'smoke': {
-        'type': 'Fire/Smoke Detected',
-        'severity': 'Critical',
-        'priority': 'Critical',
-        'weight': 9
-    },
-    'blood': {
-        'type': 'Medical Emergency - Blood Detected',
-        'severity': 'Critical',
-        'priority': 'Critical',
-        'weight': 10
-    },
-    # Vehicle accidents
+
+    # ── ROAD & TRAFFIC ACCIDENTS ──────────────────────────────────────────────
     'car': {
-        'type': 'Car Accident',
-        'severity': 'High',
+        'type': 'Vehicle-to-Vehicle Collision',
+        'category': 'Road & Traffic',
+        'severity': 'Critical',
         'priority': 'Critical',
+        'response': 'Dispatch Traffic Police & Ambulance',
         'weight': 9
     },
     'truck': {
-        'type': 'Vehicle Accident (Truck)',
-        'severity': 'High',
+        'type': 'Heavy Truck Accident',
+        'category': 'Road & Traffic',
+        'severity': 'Critical',
         'priority': 'Critical',
+        'response': 'Dispatch Traffic Police, Fire Brigade & Ambulance',
         'weight': 9
     },
     'bus': {
-        'type': 'Vehicle Accident (Bus)',
-        'severity': 'High',
+        'type': 'Bus Accident / Possible Rollover',
+        'category': 'Road & Traffic',
+        'severity': 'Critical',
         'priority': 'Critical',
+        'response': 'Dispatch Multiple Ambulances & Traffic Police',
         'weight': 9
     },
     'motorcycle': {
-        'type': 'Motorcycle Accident',
+        'type': 'Motorcycle / Bajaj Accident',
+        'category': 'Road & Traffic',
         'severity': 'High',
-        'priority': 'High',
+        'priority': 'Critical',
+        'response': 'Dispatch Ambulance & Traffic Police',
         'weight': 8
     },
     'bicycle': {
         'type': 'Bicycle Accident',
+        'category': 'Road & Traffic',
         'severity': 'Medium',
         'priority': 'High',
-        'weight': 7
-    },
-    # Emergency vehicles
-    'ambulance': {
-        'type': 'Emergency Vehicle Present',
-        'severity': 'Medium',
-        'priority': 'High',
-        'weight': 8
-    },
-    'police': {
-        'type': 'Police Presence',
-        'severity': 'Medium',
-        'priority': 'Medium',
+        'response': 'Dispatch Ambulance',
         'weight': 6
     },
-    # Suspicious activities
-    'knife': {
-        'type': 'Weapon Detected (Knife)',
+
+    # ── PEDESTRIAN DANGER ─────────────────────────────────────────────────────
+    'person': {
+        'type': 'Pedestrian / Person in Danger',
+        'category': 'Road & Traffic',
+        'severity': 'High',
+        'priority': 'High',
+        'response': 'Dispatch Ambulance & Traffic Control',
+        'weight': 8
+    },
+
+    # ── FIRE & EXPLOSION ──────────────────────────────────────────────────────
+    'fire': {
+        'type': 'Fire Emergency Detected',
+        'category': 'Fire & Explosion',
         'severity': 'Critical',
         'priority': 'Critical',
+        'response': 'Dispatch Fire Brigade & Ambulance immediately',
+        'weight': 10
+    },
+    'smoke': {
+        'type': 'Smoke Detected — Possible Fire',
+        'category': 'Fire & Explosion',
+        'severity': 'Critical',
+        'priority': 'Critical',
+        'response': 'Dispatch Fire Brigade & investigate source',
+        'weight': 9
+    },
+
+    # ── MEDICAL EMERGENCY ─────────────────────────────────────────────────────
+    'blood': {
+        'type': 'Medical Emergency — Injury/Blood Detected',
+        'category': 'Medical',
+        'severity': 'Critical',
+        'priority': 'Critical',
+        'response': 'Dispatch Ambulance immediately',
+        'weight': 10
+    },
+
+    # ── CONSTRUCTION SITE ACCIDENTS ───────────────────────────────────────────
+    'crane': {
+        'type': 'Crane / Heavy Equipment Accident',
+        'category': 'Construction',
+        'severity': 'Critical',
+        'priority': 'Critical',
+        'response': 'Dispatch Emergency Response & stop site operations',
+        'weight': 9
+    },
+    'hard hat': {
+        'type': 'Construction Worker — Safety Concern',
+        'category': 'Construction',
+        'severity': 'Medium',
+        'priority': 'Medium',
+        'response': 'Alert site supervisor',
+        'weight': 4
+    },
+    'helmet': {
+        'type': 'Worker with Safety Helmet Detected',
+        'category': 'Construction',
+        'severity': 'Low',
+        'priority': 'Low',
+        'response': 'Monitor',
+        'weight': 2
+    },
+
+    # ── CROWD / STAMPEDE ──────────────────────────────────────────────────────
+    'crowd': {
+        'type': 'Large Crowd Gathering — Stampede Risk',
+        'category': 'Crowd & Public Safety',
+        'severity': 'High',
+        'priority': 'High',
+        'response': 'Deploy crowd control officers',
+        'weight': 7
+    },
+
+    # ── EMERGENCY VEHICLES (indicates active emergency) ───────────────────────
+    'ambulance': {
+        'type': 'Ambulance Present — Active Emergency',
+        'category': 'Medical',
+        'severity': 'High',
+        'priority': 'High',
+        'response': 'Clear path for emergency vehicle',
+        'weight': 8
+    },
+
+    # ── WEAPONS ───────────────────────────────────────────────────────────────
+    'knife': {
+        'type': 'Weapon Detected — Knife',
+        'category': 'Security',
+        'severity': 'Critical',
+        'priority': 'Critical',
+        'response': 'Dispatch Police immediately',
         'weight': 10
     },
     'gun': {
-        'type': 'Weapon Detected (Firearm)',
+        'type': 'Weapon Detected — Firearm',
+        'category': 'Security',
         'severity': 'Critical',
         'priority': 'Critical',
+        'response': 'Dispatch Armed Police immediately',
         'weight': 10
     },
     'scissors': {
-        'type': 'Sharp Object Detected',
+        'type': 'Sharp Object — Potential Threat',
+        'category': 'Security',
         'severity': 'High',
         'priority': 'High',
-        'weight': 7
+        'response': 'Monitor and alert security',
+        'weight': 6
     },
-    # Medium priority
-    'bottle': {
-        'type': 'Suspicious Object (Bottle)',
-        'severity': 'Medium',
-        'priority': 'Medium',
-        'weight': 5
-    },
-    'cell phone': {
-        'type': 'Suspicious Activity involving Phone',
-        'severity': 'Medium',
-        'priority': 'Medium',
-        'weight': 4
-    },
+
+    # ── SUSPICIOUS / ABANDONED OBJECTS ────────────────────────────────────────
     'backpack': {
-        'type': 'Unattended Baggage',
+        'type': 'Unattended Baggage — Suspicious',
+        'category': 'Security',
         'severity': 'Medium',
         'priority': 'Medium',
+        'response': 'Investigate abandoned object',
         'weight': 5
     },
-    'crowd': {
-        'type': 'Large Crowd Detected',
+    'suitcase': {
+        'type': 'Unattended Luggage — Suspicious',
+        'category': 'Security',
         'severity': 'Medium',
         'priority': 'Medium',
+        'response': 'Investigate abandoned object',
         'weight': 5
     },
-    # Lower priority
-    'chair': {
-        'type': 'Furniture Obstruction',
+
+    # ── GENERAL ROAD OBJECTS (road blockage) ─────────────────────────────────
+    'stop sign': {
+        'type': 'Road Sign — Traffic Management',
+        'category': 'Road & Traffic',
         'severity': 'Low',
         'priority': 'Low',
+        'response': 'Monitor',
+        'weight': 2
+    },
+    'traffic light': {
+        'type': 'Traffic Signal Area',
+        'category': 'Road & Traffic',
+        'severity': 'Low',
+        'priority': 'Low',
+        'response': 'Monitor',
+        'weight': 2
+    },
+
+    # ── LOW PRIORITY / CONTEXT OBJECTS ────────────────────────────────────────
+    'bottle': {
+        'type': 'Suspicious Object (Bottle)',
+        'category': 'Security',
+        'severity': 'Low',
+        'priority': 'Low',
+        'response': 'Monitor',
+        'weight': 2
+    },
+    'cell phone': {
+        'type': 'Suspicious Activity — Phone Use',
+        'category': 'Security',
+        'severity': 'Low',
+        'priority': 'Low',
+        'response': 'Monitor',
+        'weight': 2
+    },
+    'chair': {
+        'type': 'Object on Road — Possible Blockage',
+        'category': 'Road & Traffic',
+        'severity': 'Low',
+        'priority': 'Low',
+        'response': 'Remove obstruction',
         'weight': 2
     },
     'table': {
-        'type': 'Furniture Obstruction',
+        'type': 'Object Obstruction Detected',
+        'category': 'Road & Traffic',
         'severity': 'Low',
         'priority': 'Low',
+        'response': 'Remove obstruction',
         'weight': 2
-    }
+    },
 }
 
 def extract_frame_from_video(video_bytes: bytes) -> Image.Image:
@@ -252,43 +353,50 @@ def extract_frame_from_video(video_bytes: bytes) -> Image.Image:
         raise
 
 def map_detection_to_incident(label: str, confidence: float) -> Dict[str, Any]:
-    """Map a single detection to incident type"""
-    
+    """Map a single detection to Ethiopian-context incident type.
+    Objects not in the known classification → 'Out of Common Incidents'."""
+
     label_lower = label.lower()
-    
+
     if label_lower in EMERGENCY_MAPPING:
         mapping = EMERGENCY_MAPPING[label_lower]
         incident_type = mapping['type']
-        severity = mapping['severity']
-        priority = mapping['priority']
-        weight = mapping['weight']
+        category      = mapping.get('category', 'General')
+        severity      = mapping['severity']
+        priority      = mapping['priority']
+        response      = mapping.get('response', 'Monitor situation')
+        weight        = mapping['weight']
     else:
-        # Generic object
-        incident_type = f"{label.capitalize()} Related Incident"
-        # Adjust based on confidence
+        # Object is not in the Ethiopian common-accident classification list
+        incident_type = f"Out of Common Incidents ({label.capitalize()})"
+        category      = 'Unknown'
+        response      = 'Monitor — not a classified Ethiopian emergency type'
         if confidence > 0.85:
-            weight = 6
-            severity, priority = "Medium", "Medium"
+            weight = 3
+            severity, priority = "Low", "Low"
         elif confidence > 0.6:
-            weight = 4
-            severity, priority = "Medium", "Low"
-        else:
             weight = 2
             severity, priority = "Low", "Low"
-    
-    # Adjust weight based on confidence
-    if confidence > 0.9:
-        weight += 2
-    elif confidence > 0.75:
-        weight += 1
-    
+        else:
+            weight = 1
+            severity, priority = "Low", "Low"
+
+    # Boost weight for high-confidence known detections
+    if label_lower in EMERGENCY_MAPPING:
+        if confidence > 0.9:
+            weight += 2
+        elif confidence > 0.75:
+            weight += 1
+
     return {
-        "type": incident_type,
+        "type":       incident_type,
+        "category":   category,
         "confidence": round(confidence, 2),
-        "severity": severity,
-        "priority": priority,
-        "weight": weight,
-        "raw_label": label
+        "severity":   severity,
+        "priority":   priority,
+        "response":   response,
+        "weight":     weight,
+        "raw_label":  label
     }
 
 def analyze_all_objects(img) -> List[Dict[str, Any]]:
@@ -905,6 +1013,116 @@ async def analyze_with_threshold(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+def analyze_with_boxes(img) -> List[Dict[str, Any]]:
+    """Detect objects and return bounding boxes + tracking-ready info"""
+    detections = []
+    if not YOLO_AVAILABLE or not yolo_model:
+        return detections
+    try:
+        results = yolo_model(img)
+        img_w, img_h = img.size if PIL_AVAILABLE else (640, 480)
+        for r in results:
+            if len(r.boxes) == 0:
+                continue
+            for i, box in enumerate(r.boxes):
+                label = yolo_model.names[int(box.cls[0])]
+                confidence = float(box.conf[0])
+                if confidence < 0.30:
+                    continue
+                # Bounding box in xyxy (normalized 0-1)
+                xyxy = box.xyxy[0].tolist()
+                x1, y1, x2, y2 = xyxy
+                cx = round((x1 + x2) / 2 / img_w, 4)
+                cy = round((y1 + y2) / 2 / img_h, 4)
+                w_norm = round((x2 - x1) / img_w, 4)
+                h_norm = round((y2 - y1) / img_h, 4)
+
+                incident = map_detection_to_incident(label, confidence)
+                detections.append({
+                    **incident,
+                    "track_id": f"T{i+1:02d}",
+                    "bbox": {
+                        "x": round(x1 / img_w, 4),
+                        "y": round(y1 / img_h, 4),
+                        "w": w_norm,
+                        "h": h_norm,
+                        "cx": cx,
+                        "cy": cy
+                    }
+                })
+        detections.sort(key=lambda x: x["weight"], reverse=True)
+    except Exception as e:
+        logger.error(f"Box detection error: {e}")
+    return detections
+
+
+@app.post("/analyze_boxes")
+async def analyze_with_bboxes(image: UploadFile = File(...)):
+    """Analyze image and return detections with bounding box coordinates"""
+    request_start = time.time()
+    try:
+        data = await image.read()
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        detections = analyze_with_boxes(img)
+        processing_time = round((time.time() - request_start) * 1000, 2)
+        performance_metrics['processing_times'].append(processing_time)
+        performance_metrics['requests'].append(datetime.now().isoformat())
+        return {
+            "detections": detections,
+            "total": len(detections),
+            "processing_time_ms": processing_time,
+            "ai_engine": "YOLOv8 + BBox",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/stream_analyze")
+async def stream_analyze_ws(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time frame analysis.
+    Client sends: { "streamId": "...", "frame": "<base64 jpeg>" }
+    Server sends: { "streamId": "...", "detections": [...], "processing_time_ms": ... }
+    """
+    await websocket.accept()
+    logger.info("🔌 WebSocket stream_analyze client connected")
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            payload = json.loads(raw)
+            stream_id = payload.get("streamId", "unknown")
+            frame_b64 = payload.get("frame", "")
+
+            if not frame_b64:
+                continue
+
+            t0 = time.time()
+            try:
+                image_bytes = base64.b64decode(frame_b64)
+                img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                detections = analyze_with_boxes(img)
+            except Exception as e:
+                logger.warning(f"Frame decode error: {e}")
+                detections = []
+
+            processing_time = round((time.time() - t0) * 1000, 2)
+            result = {
+                "streamId": stream_id,
+                "detections": detections,
+                "total": len(detections),
+                "processing_time_ms": processing_time,
+                "timestamp": datetime.now().isoformat(),
+                "ai_engine": "YOLOv8"
+            }
+            await websocket.send_text(json.dumps(result))
+
+    except WebSocketDisconnect:
+        logger.info("🔌 WebSocket stream_analyze client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+
 
 if __name__ == "__main__":
     import uvicorn
