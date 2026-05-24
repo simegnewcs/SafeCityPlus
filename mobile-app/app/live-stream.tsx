@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity, Alert,
   ActivityIndicator, Dimensions, Platform, AppState, Animated,
 } from 'react-native';
+import AppLoader from '../components/AppLoader';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -487,18 +488,10 @@ export default function LiveStreamScreen() {
 
   if (connectionStatus === 'connecting' && !isStreaming) {
     return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color="#E63939" />
-          <Text style={styles.connectingText}>Connecting to server...</Text>
-          <Text style={styles.connectingSubText}>{socketUrl}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={() => connectToServer(0)}>
-            <Text style={styles.retryButtonText}>Retry Connection</Text>
-          </TouchableOpacity>
-        </View>
-      </LinearGradient>
+      <AppLoader message="Connecting to server..." />
     );
   }
+
 
   if (!permission?.granted) {
     return (

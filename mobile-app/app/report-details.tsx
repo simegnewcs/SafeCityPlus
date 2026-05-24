@@ -9,6 +9,7 @@ import { Video } from 'expo-av';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { reportIncident } from '../services/incidentService';
+import AppLoader from '../components/AppLoader';
 import * as Location from 'expo-location';
 
 const { width, height } = Dimensions.get('window');
@@ -179,12 +180,7 @@ export default function ReportDetails() {
   // Show loading if no photoUri
   if (!photoUri) {
     return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color="#E63939" />
-          <Text style={styles.loadingText}>Loading...</Text>
-        </View>
-      </LinearGradient>
+      <AppLoader message="Loading..." />
     );
   }
 

@@ -7,6 +7,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import AppLoader from '../components/AppLoader';
 
 const { width, height } = Dimensions.get('window');
 
@@ -267,12 +268,7 @@ export default function TipsScreen() {
 
   if (loading) {
     return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color="#E63939" />
-          <Text style={styles.loadingText}>Loading safety tips...</Text>
-        </View>
-      </LinearGradient>
+      <AppLoader message="Loading safety tips..." />
     );
   }
 

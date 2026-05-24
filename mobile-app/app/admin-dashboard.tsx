@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { storage } from '../utils/storage';
+import AppLoader from '../components/AppLoader';
 import { wsService } from '../services/websocket.service';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
@@ -1248,12 +1249,7 @@ export default function AdminDashboard() {
   );
 
   if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#E63939" />
-        <Text style={styles.loadingText}>Loading dashboard...</Text>
-      </View>
-    );
+    return <AppLoader message="Loading dashboard..." />;
   }
 
   return (

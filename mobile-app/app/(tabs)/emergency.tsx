@@ -8,6 +8,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
+import AppLoader from '../../components/AppLoader';
 
 // Emergency numbers
 const EMERGENCY_NUMBERS = [
@@ -195,12 +196,7 @@ export default function EmergencyScreen() {
 
   if (loading) {
     return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color="#E63939" />
-          <Text style={styles.loadingText}>Loading emergency contacts...</Text>
-        </View>
-      </LinearGradient>
+      <AppLoader message="Loading emergency contacts..." />
     );
   }
 

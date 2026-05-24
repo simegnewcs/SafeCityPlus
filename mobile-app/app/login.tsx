@@ -3,6 +3,7 @@ import {
   View, Text, TextInput, TouchableOpacity, 
   StyleSheet, Alert, ScrollView, ActivityIndicator 
 } from 'react-native';
+import AppLoader from '../components/AppLoader';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Mail, Lock, LogIn, User, Shield } from 'lucide-react-native';
@@ -119,14 +120,7 @@ export default function LoginScreen() {
 
   // Show loading screen while checking auth status
   if (checkingAuth) {
-    return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#E63939" />
-          <Text style={styles.loadingText}>Checking session...</Text>
-        </View>
-      </LinearGradient>
-    );
+    return <AppLoader message="Checking session..." />;
   }
 
   return (

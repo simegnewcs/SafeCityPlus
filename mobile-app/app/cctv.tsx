@@ -4,6 +4,7 @@ import {
   ActivityIndicator, RefreshControl, Dimensions,
   Modal, Animated, Platform, Alert, StatusBar,
 } from 'react-native';
+import AppLoader from '../components/AppLoader';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { Video, ResizeMode } from 'expo-av';
@@ -247,13 +248,7 @@ export default function CCTVScreen() {
 
   // ── Loading ───────────────────────────────────────────────────────────────
   if (loading) {
-    return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={s.fillCenter}>
-        <StatusBar barStyle="light-content" />
-        <ActivityIndicator size="large" color="#E63939" />
-        <Text style={s.loadingText}>Loading CCTV feeds…</Text>
-      </LinearGradient>
-    );
+    return <AppLoader message="Loading CCTV feeds…" />;
   }
 
   // ── Main Render ───────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { User, Phone, Mail, LogOut, Shield, Calendar, Award, FileText, CheckCircle, Clock, UserX } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
+import AppLoader from '../../components/AppLoader';
 
 // Logout function
 const logout = async (router: any) => {
@@ -117,12 +118,7 @@ export default function ProfileScreen() {
 
   if (loading) {
     return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#E63939" />
-          <Text style={styles.loadingText}>Loading profile...</Text>
-        </View>
-      </LinearGradient>
+      <AppLoader message="Loading profile..." />
     );
   }
 

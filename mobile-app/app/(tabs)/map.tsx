@@ -7,6 +7,7 @@ import MapView, { Marker, Callout, PROVIDER_GOOGLE, Polyline, Circle } from 'rea
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
+import AppLoader from '../../components/AppLoader';
 import { Ionicons } from '@expo/vector-icons';
 
 const { width, height } = Dimensions.get('window');
@@ -187,12 +188,7 @@ export default function MapScreen() {
   );
 
   if (loading) {
-    return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#E63939" />
-        <Text style={styles.loadingText}>Loading map data...</Text>
-      </LinearGradient>
-    );
+    return <AppLoader message="Loading map data..." />;
   }
 
   return (

@@ -1,8 +1,8 @@
 // app/_layout.tsx
 import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { View, ActivityIndicator } from 'react-native';
 import { storage } from '../utils/storage';
+import AppLoader from '../components/AppLoader';
 
 export default function RootLayout() {
   const [isLoading, setIsLoading] = useState(true);
@@ -36,11 +36,7 @@ export default function RootLayout() {
   };
 
   if (isLoading) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0A2540' }}>
-        <ActivityIndicator size="large" color="#E63939" />
-      </View>
-    );
+    return <AppLoader />;
   }
 
   return (
