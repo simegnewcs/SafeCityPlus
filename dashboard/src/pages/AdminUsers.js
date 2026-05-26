@@ -5,7 +5,7 @@ import PageHeader from "../layout/PageHeader";
 import axios from "axios";
 import { 
   Users, Search, UserPlus, Shield, Edit2, Trash2, 
-  X, Check, AlertCircle, Eye, EyeOff, Phone, 
+  X, Check, AlertCircle, Eye, EyeOff, Phone, Mail,
   Calendar, Activity, Filter, RefreshCw
 } from "lucide-react";
 
@@ -99,7 +99,7 @@ const AdminUsers = () => {
     return users.filter((u) => {
       const roleMatch = roleFilter === "All" || u.role === roleFilter;
       const searchMatch = !searchTerm || 
-        `${u.full_name || ""} ${u.phone || ""} ${u.role || ""}`.toLowerCase().includes(searchTerm.toLowerCase());
+        `${u.full_name || ""} ${u.email || ""} ${u.phone || ""} ${u.role || ""}`.toLowerCase().includes(searchTerm.toLowerCase());
       return roleMatch && searchMatch;
     });
   }, [users, roleFilter, searchTerm]);
@@ -301,7 +301,7 @@ const AdminUsers = () => {
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-400" size={18} />
                   <input
                     type="text"
-                    placeholder="Search by name, phone, or role..."
+                    placeholder="Search by name, email, phone, or role..."
                     className="w-full pl-11 pr-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
@@ -353,6 +353,7 @@ const AdminUsers = () => {
                       <tr className="bg-zinc-50 border-b border-zinc-200">
                         <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">ID</th>
                         <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">User</th>
+                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Email</th>
                         <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Phone</th>
                         <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Role</th>
                         <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Joined</th>
@@ -371,6 +372,12 @@ const AdminUsers = () => {
                               <div>
                                 <p className="font-medium text-zinc-900">{u.full_name}</p>
                               </div>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-1.5 text-zinc-600">
+                              <Mail size={12} className="text-zinc-400 flex-shrink-0" />
+                              <span className="truncate max-w-[150px]" title={u.email}>{u.email || "—"}</span>
                             </div>
                           </td>
                           <td className="px-6 py-4">

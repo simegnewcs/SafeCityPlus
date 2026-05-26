@@ -8,7 +8,8 @@ import {
   Settings, 
   LogOut,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  BarChart2
 } from "lucide-react";
 
 const ResponderSidebar = ({ activeTab, setActiveTab, user }) => {
@@ -26,6 +27,7 @@ const ResponderSidebar = ({ activeTab, setActiveTab, user }) => {
     { name: "Dashboard", icon: <LayoutDashboard size={20} />, path: "/responder/dashboard" },
     { name: "Assigned Incidents", icon: <List size={20} />, path: "/responder/incidents" },
     { name: "CCTV Feed", icon: <Video size={20} />, path: "/responder/cctv" },
+    { name: "Analytics", icon: <BarChart2 size={20} />, path: "/responder/analytics" },
     { name: "Settings", icon: <Settings size={20} />, path: "/responder/settings" },
     { name: "Logout", icon: <LogOut size={20} />, path: "/logout", isLogout: true },
   ];

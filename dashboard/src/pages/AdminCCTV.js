@@ -40,116 +40,411 @@ const ConfidenceBar = ({ value }) => {
   );
 };
 
+// Shared geocoding function
+const getPlaceName = async (locationStr, setPlaceNames) => {
+  if (!locationStr || locationStr === 'Unknown') return 'Unknown';
+  
+  // Check if we already have this place name cached
+  if (setPlaceNames && typeof setPlaceNames === 'function') {
+    // This is a state setter, we can't check cache here without state
+    // The caching will be handled by the caller
+  } else {
+    // Simple cache for standalone usage
+    if (!getPlaceName.cache) getPlaceName.cache = {};
+    if (getPlaceName.cache[locationStr]) {
+      return getPlaceName.cache[locationStr];
+    }
+  }
+
+  // Check if it's already a place name (not coordinates)
+  if (!locationStr.includes(',') || isNaN(locationStr.split(',')[0]) || isNaN(locationStr.split(',')[1])) {
+    return locationStr;
+  }
+
+  const [lat, lng] = locationStr.split(',').map(s => parseFloat(s.trim()));
+  if (isNaN(lat) || isNaN(lng)) return locationStr;
+
+  // Try multiple geocoding approaches with OpenStreetMap
+  const services = [
+    {
+      name: 'OpenStreetMap Nominatim Building Focus',
+      url: `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1&zoom=18`,
+      timeout: 12000 // 12 seconds
+    },
+    {
+      name: 'OpenStreetMap Search Buildings',
+      url: `https://nominatim.openstreetmap.org/search?q=building&format=json&limit=3&addressdetails=1&viewbox=${lng-0.003},${lat+0.003},${lng+0.003},${lat-0.003}`,
+      timeout: 8000 // 8 seconds
+    },
+    {
+      name: 'OpenStreetMap Search Shops',
+      url: `https://nominatim.openstreetmap.org/search?q=shop&format=json&limit=3&addressdetails=1&viewbox=${lng-0.003},${lat+0.003},${lng+0.003},${lat-0.003}`,
+      timeout: 8000 // 8 seconds
+    },
+    {
+      name: 'OpenStreetMap Search Amenities',
+      url: `https://nominatim.openstreetmap.org/search?q=amenity&format=json&limit=3&addressdetails=1&viewbox=${lng-0.003},${lat+0.003},${lng+0.003},${lat-0.003}`,
+      timeout: 8000 // 8 seconds
+    },
+    {
+      name: 'OpenStreetMap Search University',
+      url: `https://nominatim.openstreetmap.org/search?q=university&format=json&limit=3&addressdetails=1&viewbox=${lng-0.005},${lat+0.005},${lng+0.005},${lat-0.005}`,
+      timeout: 8000 // 8 seconds
+    },
+    {
+      name: 'OpenStreetMap Search Offices',
+      url: `https://nominatim.openstreetmap.org/search?q=office&format=json&limit=3&addressdetails=1&viewbox=${lng-0.003},${lat+0.003},${lng+0.003},${lat-0.003}`,
+      timeout: 8000 // 8 seconds
+    }
+  ];
+
+  for (const service of services) {
+    try {
+      console.log(`Admin AI: Trying ${service.name} for ${locationStr}...`);
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), service.timeout);
+      
+      const response = await fetch(service.url, {
+        headers: {
+          'Accept-Language': 'en',
+          'User-Agent': 'SafeCityAdmin/1.0'
+        },
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      // Handle both reverse geocoding and search results
+      let placeName = null;
+      
+      if (service.name.includes('Search Nearby')) {
+        // Handle search results (array of places)
+        if (Array.isArray(data) && data.length > 0) {
+          // Find the most relevant place (prioritize buildings and walkable locations)
+          const relevantPlace = data.find(place => {
+            const name = (place.display_name || '').toLowerCase();
+            const type = place.type || '';
+            const class_ = place.class || '';
+            return name.includes('university') || 
+                   name.includes('college') || 
+                   name.includes('institute') || 
+                   name.includes('computer') || 
+                   name.includes('science') || 
+                   name.includes('technology') ||
+                   name.includes('building') ||
+                   name.includes('restaurant') ||
+                   name.includes('hospital') ||
+                   name.includes('bank') ||
+                   name.includes('shop') ||
+                   name.includes('office') ||
+                   type === 'university' ||
+                   type === 'building' ||
+                   type === 'shop' ||
+                   type === 'office' ||
+                   class_ === 'education' ||
+                   class_ === 'building' ||
+                   class_ === 'shop';
+          }) || data.find(place => {
+            // Fallback: avoid highways and roads
+            const name = (place.display_name || '').toLowerCase();
+            return !name.includes('highway') && 
+                   !name.includes('road') && 
+                   !name.match(/^a\d+$/);
+          }) || data[0]; // Ultimate fallback to first result
+          
+          if (relevantPlace) {
+            placeName = relevantPlace.display_name.split(',')[0].trim();
+          }
+        }
+      } else {
+        // Handle reverse geocoding results
+        if (data && data.display_name) {
+          const address = data.address || {};
+          
+          // Priority order for meaningful place names - prioritize specific buildings
+          if (data.name && data.name.trim() && 
+              !data.name.toLowerCase().includes('atm') &&
+              !data.name.toLowerCase().match(/^\d+/) &&
+              !data.name.toLowerCase().match(/^a\d+/) &&
+              !data.name.toLowerCase().includes('highway')) {
+            placeName = data.name.trim();
+          } else if (address.building && 
+                      !address.building.toLowerCase().includes('highway') &&
+                      !address.building.toLowerCase().match(/^a\d+/)) {
+            placeName = address.building;
+          } else if (address.university || address.college) {
+            placeName = address.university || address.college;
+          } else if (address.education) {
+            placeName = address.education;
+          } else if (address.shop && 
+                      !address.shop.toLowerCase().includes('atm') &&
+                      !address.shop.toLowerCase().match(/^a\d+/)) {
+            placeName = address.shop;
+          } else if (address.amenity && 
+                      (address.amenity.includes('university') || 
+                       address.amenity.includes('college') ||
+                       address.amenity.includes('school') ||
+                       address.amenity.includes('institute') ||
+                       address.amenity.includes('restaurant') ||
+                       address.amenity.includes('hospital') ||
+                       address.amenity.includes('bank') ||
+                       address.amenity.includes('pharmacy'))) {
+            placeName = address.amenity;
+          } else if (address.tourism) {
+            placeName = address.tourism;
+          } else if (address.office) {
+            placeName = address.office;
+          } else if (data.class === 'education' || data.class === 'building') {
+            placeName = data.type || data.display_name.split(',')[0].trim();
+          } else if (address.road && (address.suburb || address.neighbourhood)) {
+            // Combine road and area for better context
+            const area = address.suburb || address.neighbourhood;
+            placeName = `${address.road}, ${area}`;
+          } else if (address.road) {
+            placeName = address.road;
+          } else if (address.neighbourhood || address.suburb) {
+            placeName = address.neighbourhood || address.suburb;
+          } else if (address.village) {
+            placeName = address.village;
+          } else if (address.city || address.town) {
+            placeName = address.city || address.town;
+          } else {
+            // Smart fallback - extract meaningful parts, avoid highways and roads
+            const parts = data.display_name.split(',');
+            const meaningfulParts = parts.filter(part => {
+              const trimmed = part.trim();
+              return trimmed && 
+                     !trimmed.match(/^\d+$/) && // Skip postcodes
+                     !trimmed.match(/Ethiopia$/i) && // Skip country
+                     !trimmed.match(/\d{4}$/) && // Skip 4-digit codes
+                     !trimmed.toLowerCase().includes('atm') && // Skip ATMs
+                     !trimmed.toLowerCase().match(/^a\d+$/) && // Skip highway names like A3
+                     !trimmed.toLowerCase().includes('highway') &&
+                     !trimmed.toLowerCase().includes('road') &&
+                     !trimmed.toLowerCase().includes('street');
+            });
+            
+            // If we filtered out everything, try to find a specific area
+            if (meaningfulParts.length === 0) {
+              const areaParts = parts.filter(part => {
+                const trimmed = part.trim();
+                return trimmed && 
+                       !trimmed.match(/^\d+$/) && 
+                       !trimmed.match(/Ethiopia$/i) &&
+                       !trimmed.match(/\d{4}$/) &&
+                       !trimmed.toLowerCase().includes('atm');
+              });
+              placeName = areaParts.slice(0, 2).join(', ').trim();
+            } else {
+              placeName = meaningfulParts.slice(0, 2).join(', ').trim();
+            }
+          }
+        }
+      }
+      
+      if (placeName && placeName !== 'Unknown Location' && placeName.length > 0) {
+        console.log(`Admin AI: ✅ Found place name: ${placeName}`);
+        
+        // Cache the result
+        if (setPlaceNames && typeof setPlaceNames === 'function') {
+          setPlaceNames(prev => ({ ...prev, [locationStr]: placeName }));
+        } else {
+          if (!getPlaceName.cache) getPlaceName.cache = {};
+          getPlaceName.cache[locationStr] = placeName;
+        }
+        
+        return placeName;
+      }
+    } catch (error) {
+      console.error(`Admin AI: ❌ ${service.name} failed:`, error.message);
+      if (error.name === 'AbortError') {
+        console.log(`Admin AI: ⏰ ${service.name} timed out`);
+      }
+      // Continue to next service
+      continue;
+    }
+  }
+  
+  // If all services fail, create a meaningful fallback name
+  console.log(`Admin AI: 📍 All geocoding services failed for ${locationStr}, creating intelligent fallback`);
+  
+  // Create a meaningful fallback based on coordinate patterns
+  const fallbackLat = parseFloat(lat);
+  const fallbackLng = parseFloat(lng);
+  
+  // Ethiopian coordinate ranges for common areas
+  const ethiopianLocations = {
+    'Addis Ababa Area': { latMin: 8.8, latMax: 9.2, lngMin: 38.6, lngMax: 38.9 },
+    'Bahir Dar Area': { latMin: 11.5, latMax: 11.7, lngMin: 37.3, lngMax: 37.5 },
+    'Gondar Area': { latMin: 12.5, latMax: 12.7, lngMin: 37.4, lngMax: 37.5 },
+    'Mekelle Area': { latMin: 13.4, latMax: 13.6, lngMin: 39.4, lngMax: 39.6 }
+  };
+  
+  let fallbackName = 'Unknown Location';
+  
+  // Check if coordinates match known Ethiopian areas
+  for (const [areaName, bounds] of Object.entries(ethiopianLocations)) {
+    if (fallbackLat >= bounds.latMin && fallbackLat <= bounds.latMax && 
+        fallbackLng >= bounds.lngMin && fallbackLng <= bounds.lngMax) {
+      fallbackName = areaName;
+      break;
+    }
+  }
+  
+  // If no specific area, create a generic but meaningful name
+  if (fallbackName === 'Unknown Location') {
+    // Use more readable coordinate format
+    fallbackName = `Location ${fallbackLat.toFixed(4)}°N, ${fallbackLng.toFixed(4)}°E`;
+  }
+  
+  console.log(`Admin AI: 🎯 Using fallback location name: ${fallbackName}`);
+  return fallbackName;
+};
+
 // ── Stream Location Map with Routing ─────────────────────────────────────────
 const StreamLocationMap = ({ locationStr }) => {
   const [incidentCoords, setIncidentCoords] = React.useState(null);
-  const [userCoords,     setUserCoords]     = React.useState(null);
-  const [address,        setAddress]        = React.useState(null);
-  const [route,          setRoute]          = React.useState(null); // { distance, duration, geometry }
-  const [routeError,     setRouteError]     = React.useState(null);
-  const [loadingRoute,   setLoadingRoute]   = React.useState(false);
+  const [placeName,      setPlaceName]      = React.useState(null);
   const [iframeSrc,      setIframeSrc]      = React.useState(null);
   const blobUrlRef = React.useRef(null);
 
-  // Parse incident coords from location string
+  // Parse incident coords from location string (mobile app approach)
   React.useEffect(() => {
-    if (!locationStr || locationStr === 'Unknown') return;
+    console.log('Parsing incident location:', locationStr);
+    
+    if (!locationStr || locationStr === 'Unknown') {
+      console.log('No valid location string provided');
+      return;
+    }
+    
     const parts = locationStr.split(',').map(s => parseFloat(s.trim()));
-    if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return;
+    console.log('Parsed coordinate parts:', parts);
+    
+    if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) {
+      console.log('Invalid coordinate format');
+      return;
+    }
+    
     // Sanity check: valid lat/lng ranges
     const [lat, lng] = parts;
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
-    setIncidentCoords({ lat, lng });
-
-    fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`, {
-      headers: { 'Accept-Language': 'en' }
-    })
-      .then(r => r.json())
-      .then(data => {
-        const a = data.address || {};
-        const place = [a.road || a.pedestrian, a.suburb || a.neighbourhood, a.city || a.town || a.village, a.country]
-          .filter(Boolean).join(', ');
-        setAddress(place || data.display_name || locationStr);
-      })
-      .catch(() => setAddress(locationStr));
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      console.log('Coordinates out of valid range:', { lat, lng });
+      return;
+    }
+    
+    const coords = { lat, lng };
+    console.log('Setting incident coordinates:', coords);
+    setIncidentCoords(coords);
+    
+    // Simple coordinate display like mobile app - no complex geocoding
+    
+    // Get place name for the coordinates
+    getPlaceName(locationStr, null).then(name => {
+      setPlaceName(name);
+    }).catch(error => {
+      console.error('Error getting place name:', error);
+      setPlaceName(null);
+    });
   }, [locationStr]);
 
-  // Get user's current location
-  React.useEffect(() => {
-    if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(
-      pos => setUserCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => setUserCoords(null)
-    );
-  }, []);
-
-  // Fetch driving route via OSRM (free, no API key)
-  React.useEffect(() => {
-    if (!incidentCoords || !userCoords) return;
-    setLoadingRoute(true);
-    setRouteError(null);
-    const { lat: iLat, lng: iLng } = incidentCoords;
-    const { lat: uLat, lng: uLng } = userCoords;
-    // OSRM public API: driving route with full geometry
-    fetch(`https://router.project-osrm.org/route/v1/driving/${uLng},${uLat};${iLng},${iLat}?overview=full&geometries=geojson`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.code !== 'Ok' || !data.routes?.length) throw new Error('No route found');
-        const r0 = data.routes[0];
-        setRoute({
-          distance: r0.distance,   // metres
-          duration: r0.duration,   // seconds
-          geometry: r0.geometry,   // GeoJSON LineString
-        });
-        setLoadingRoute(false);
-      })
-      .catch(e => { setRouteError(e.message); setLoadingRoute(false); });
-  }, [incidentCoords, userCoords]);
-
-  // Build Leaflet HTML blob and inject into iframe whenever route changes
+  
+  
+  
+  // Build Leaflet HTML blob and inject into iframe whenever incident location changes
   React.useEffect(() => {
     if (!incidentCoords) return;
     const { lat: iLat, lng: iLng } = incidentCoords;
-    const uLat = userCoords?.lat;
-    const uLng = userCoords?.lng;
-    const hasRoute = route && uLat != null;
-
-    // Centre map between both points, or on incident if no user location
-    const cLat = hasRoute ? (iLat + uLat) / 2 : iLat;
-    const cLng = hasRoute ? (iLng + uLng) / 2 : iLng;
-    const zoom  = hasRoute ? 13 : 16;
-
-    const routeCoords = hasRoute
-      ? JSON.stringify(route.geometry.coordinates.map(([ln, la]) => [la, ln]))
-      : '[]';
 
     const html = `<!DOCTYPE html><html><head>
 <meta charset="utf-8"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
-<style>html,body,#map{margin:0;padding:0;width:100%;height:100%;background:#0f172a}</style>
+<style>
+  html,body,#map{margin:0;padding:0;width:100%;height:100%;background:#0f172a}
+  .incident-label {
+    background: #dc2626;
+    color: white;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-weight: bold;
+    font-size: 14px;
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.4);
+    border: 2px solid #fff;
+    white-space: nowrap;
+    z-index: 10000;
+  }
+  .incident-marker {
+    width: 24px;
+    height: 24px;
+    background: #dc2626;
+    border: 4px solid #fff;
+    border-radius: 50%;
+    box-shadow: 0 0 20px rgba(220, 38, 38, 0.6);
+    z-index: 10001;
+  }
+  .incident-popup {
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  .incident-popup .leaflet-popup-content-wrapper {
+    background: #1e293b;
+    color: #f1f5f9;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  }
+  .incident-popup .leaflet-popup-content {
+    margin: 16px;
+    min-width: 200px;
+  }
+  .incident-popup .leaflet-popup-tip {
+    background: #1e293b;
+  }
+</style>
 </head><body>
 <div id="map"></div>
 <script>
-  var map = L.map('map',{zoomControl:true,attributionControl:false}).setView([${cLat},${cLng}],${zoom});
+  var map = L.map('map',{zoomControl:true,attributionControl:false}).setView([${iLat},${iLng}],18);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
 
-  // Incident marker (red)
-  var redIcon = L.divIcon({className:'',html:'<div style="width:14px;height:14px;background:#ef4444;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #ef4444"></div>',iconAnchor:[7,7]});
-  L.marker([${iLat},${iLng}],{icon:redIcon}).addTo(map).bindPopup('<b>📍 Incident Location</b>').openPopup();
-
-  ${uLat != null ? `
-  // Responder marker (blue)
-  var blueIcon = L.divIcon({className:'',html:'<div style="width:12px;height:12px;background:#60a5fa;border:2px solid #fff;border-radius:50%;box-shadow:0 0 6px #60a5fa"></div>',iconAnchor:[6,6]});
-  L.marker([${uLat},${uLng}],{icon:blueIcon}).addTo(map).bindPopup('<b>🚓 Your Location</b>');
-  ` : ''}
-
-  ${hasRoute ? `
-  // Route polyline
-  var coords = ${routeCoords};
-  L.polyline(coords,{color:'#f59e0b',weight:4,opacity:0.9,dashArray:'8,4'}).addTo(map);
-  map.fitBounds(L.polyline(coords).getBounds(),{padding:[20,20]});
-  ` : ''}
+  // Enhanced incident marker with label
+  var incidentIcon = L.divIcon({
+    className: 'incident-marker',
+    iconAnchor: [12, 12],
+    popupAnchor: [0, -20]
+  });
+  
+  var incidentMarker = L.marker([${iLat},${iLng}], {icon: incidentIcon}).addTo(map);
+  
+  // Add permanent label for the incident with place name
+  var labelText = '${placeName ? "🚨 " + placeName.toUpperCase() : "🚨 INCIDENT LOCATION"}';
+  var incidentLabel = L.divIcon({
+    className: 'incident-label',
+    html: labelText,
+    iconAnchor: [80, -10],
+    iconSize: [160, 32]
+  });
+  
+  L.marker([${iLat},${iLng}], {icon: incidentLabel}).addTo(map);
+  
+  // Enhanced popup with better styling
+  var popupContent = '<div class="incident-popup">' +
+    '<h3 style="margin:0 0 8px 0;color:#dc2626;font-size:16px;">🚨 EMERGENCY INCIDENT</h3>' +
+    '<p style="margin:0 0 12px 0;font-size:18px;font-weight:bold;color:#f1f5f9;">${placeName || "Incident Location"}</p>' +
+    '<p style="margin:4px 0;font-size:12px;color:#94a3b8;"><strong>GPS Coordinates:</strong><br>' +
+    '<code style="background:#334155;padding:4px 6px;border-radius:4px;font-size:11px;">${iLat.toFixed(6)}, ${iLng.toFixed(6)}</code></p>' +
+    '<p style="margin:8px 0 0 0;font-size:11px;color:#64748b;">📍 High precision location for emergency response teams</p>' +
+    '</div>';
+  
+  incidentMarker.bindPopup(popupContent, {
+    maxWidth: 300,
+    className: 'incident-popup'
+  }).openPopup();
 <\/script>
 </body></html>`;
 
@@ -159,7 +454,7 @@ const StreamLocationMap = ({ locationStr }) => {
     const url  = URL.createObjectURL(blob);
     blobUrlRef.current = url;
     setIframeSrc(url);
-  }, [incidentCoords, userCoords, route]);
+  }, [incidentCoords]);
 
   // Cleanup blob on unmount
   React.useEffect(() => () => { if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current); }, []);
@@ -174,7 +469,7 @@ const StreamLocationMap = ({ locationStr }) => {
   }
 
   const { lat: iLat, lng: iLng } = incidentCoords;
-  const osmLink = `https://www.openstreetmap.org/?mlat=${iLat}&mlon=${iLng}#map=16/${iLat}/${iLng}`;
+  const googleMapsLink = `https://www.google.com/maps?q=${iLat},${iLng}&z=16`;
 
   const fmtDist = (m) => m >= 1000 ? `${(m/1000).toFixed(1)} km` : `${Math.round(m)} m`;
   const fmtTime = (s) => {
@@ -188,8 +483,8 @@ const StreamLocationMap = ({ locationStr }) => {
       {/* Header */}
       <div className="px-3 py-2 border-b border-slate-700 flex items-center gap-1.5">
         <MapPin size={11} className="text-emerald-400" />
-        <span className="text-[10px] font-bold text-slate-300">Incident Location & Route</span>
-        <a href={osmLink} target="_blank" rel="noreferrer"
+        <span className="text-[10px] font-bold text-slate-300">Incident Location</span>
+        <a href={googleMapsLink} target="_blank" rel="noreferrer"
           className="ml-auto text-[9px] text-indigo-400 hover:text-indigo-300 transition-colors">
           Open ↗
         </a>
@@ -208,60 +503,21 @@ const StreamLocationMap = ({ locationStr }) => {
 
       {/* Route stats */}
       <div className="px-3 py-2.5 space-y-2">
-        {/* Coords + address */}
+        {/* Location display with place name */}
         <div>
-          <span className="text-[9px] font-mono text-emerald-400">{iLat.toFixed(5)}, {iLng.toFixed(5)}</span>
-          {address && <p className="text-[10px] text-slate-300 leading-tight mt-0.5">{address}</p>}
+          <span className="text-[9px] font-mono text-emerald-400">Incident Location</span>
+          <p className="text-[10px] text-slate-300 leading-tight mt-0.5 font-semibold">
+            {placeName || 'Getting location...'}
+          </p>
+          <p className="text-[9px] text-slate-500 leading-tight mt-1 font-mono">
+            {iLat.toFixed(6)}, {iLng.toFixed(6)}
+          </p>
         </div>
 
-        {/* Driving stats row */}
-        {loadingRoute && (
-          <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
-            <div className="w-3 h-3 border border-yellow-500 border-t-transparent rounded-full animate-spin" />
-            Calculating fastest route...
-          </div>
-        )}
-
-        {!loadingRoute && !userCoords && (
-          <p className="text-[10px] text-slate-500">Enable browser location to see route</p>
-        )}
-
-        {route && !loadingRoute && (
-          <div className="grid grid-cols-2 gap-2">
-            <div className="bg-slate-700/60 rounded-lg px-2.5 py-2 border border-slate-600/50">
-              <div className="flex items-center gap-1 mb-0.5">
-                <span className="text-yellow-400 text-[10px]">🚗</span>
-                <span className="text-[9px] text-slate-400 uppercase font-bold">Distance</span>
-              </div>
-              <p className="text-sm font-bold text-white">{fmtDist(route.distance)}</p>
-            </div>
-            <div className="bg-slate-700/60 rounded-lg px-2.5 py-2 border border-slate-600/50">
-              <div className="flex items-center gap-1 mb-0.5">
-                <span className="text-yellow-400 text-[10px]">⏱</span>
-                <span className="text-[9px] text-slate-400 uppercase font-bold">Drive Time</span>
-              </div>
-              <p className="text-sm font-bold text-white">{fmtTime(route.duration)}</p>
-            </div>
-          </div>
-        )}
-
-        {route && !loadingRoute && (
-          <div className="flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-2.5 py-1.5">
-            <span className="text-yellow-400 text-xs">⚡</span>
-            <span className="text-[10px] text-yellow-300 font-semibold">Fastest route by car</span>
-            <span className="ml-auto text-[9px] text-yellow-400 font-mono">{fmtDist(route.distance)} · {fmtTime(route.duration)}</span>
-          </div>
-        )}
-
-        {routeError && (
-          <p className="text-[10px] text-red-400">Route unavailable: {routeError}</p>
-        )}
-
+        
         {/* Legend */}
         <div className="flex items-center gap-3 text-[9px] text-slate-500">
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Incident</span>
-          {userCoords && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400 inline-block" /> Your Position</span>}
-          {route && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-dashed border-yellow-400" /> Route</span>}
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Incident Location</span>
         </div>
       </div>
     </div>
@@ -299,6 +555,10 @@ const AdminCCTV = () => {
   const [showTimeline, setShowTimeline] = useState(true);
   const [aiFrameCounter, setAiFrameCounter] = useState(0);
   const aiAnalyzeIntervalRef = useRef(null);
+  
+  // Geocoding state for place names
+  const [placeNames, setPlaceNames] = useState({});
+  const [streamPlaceNames, setStreamPlaceNames] = useState({});
 
   const selectedStreamRef = useRef(null);
   const socketRef = useRef(null);
@@ -351,56 +611,166 @@ const AdminCCTV = () => {
   };
   const getLabelColor = (label) => LABEL_COLORS[label?.toLowerCase()] ?? '#facc15';
 
+  // Frame buffering for smooth rendering
+  const frameBufferRef = useRef(null);
+  const animationFrameRef = useRef(null);
+  const lastFrameTimeRef = useRef(0);
+  const frameThrottleMs = 200; // Throttle to 5 FPS max for smoother display
+  const pendingFrameRef = useRef(null);
+  
+  // Stream card frame throttling
+  const streamFrameTimesRef = useRef({});
+  const streamPendingFramesRef = useRef({});
+
   // Draw a JPEG frame onto the modal canvas, then overlay bounding boxes
   const drawFrameOnCanvas = useCallback((base64Frame, detection) => {
     const canvas = modalCanvasRef.current;
     if (!canvas) return;
+    
+    const now = Date.now();
+    
+    // Throttle frame updates to prevent flickering
+    if (now - lastFrameTimeRef.current < frameThrottleMs) {
+      // Store the latest frame but don't render yet
+      pendingFrameRef.current = { base64Frame, detection };
+      return;
+    }
+    
+    lastFrameTimeRef.current = now;
+    
+    // Cancel any pending animation frame
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+
     const ctx = canvas.getContext('2d');
     const img = new Image();
+    
     img.onload = () => {
-      canvas.width  = img.naturalWidth  || canvas.offsetWidth  || 640;
-      canvas.height = img.naturalHeight || canvas.offsetHeight || 360;
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      // Use requestAnimationFrame for smooth rendering
+      animationFrameRef.current = requestAnimationFrame(() => {
+        // Set canvas dimensions only if they've changed to prevent flicker
+        const newWidth = img.naturalWidth || canvas.offsetWidth || 640;
+        const newHeight = img.naturalHeight || canvas.offsetHeight || 360;
+        
+        if (canvas.width !== newWidth || canvas.height !== newHeight) {
+          canvas.width = newWidth;
+          canvas.height = newHeight;
+        }
 
-      // Draw bounding boxes
-      const boxes = detection?.detections || [];
-      boxes.forEach(box => {
-        if (!box.w || !box.h) return;
-        const x = box.x * canvas.width;
-        const y = box.y * canvas.height;
-        const w = box.w * canvas.width;
-        const h = box.h * canvas.height;
-        const color = getLabelColor(box.label);
-        const label = `${(box.label || 'obj').toUpperCase()} ${Math.round((box.confidence||0)*100)}%`;
+        // Create off-screen canvas for double buffering
+        const offscreenCanvas = document.createElement('canvas');
+        offscreenCanvas.width = newWidth;
+        offscreenCanvas.height = newHeight;
+        const offscreenCtx = offscreenCanvas.getContext('2d');
+        
+        // Draw to off-screen canvas first
+        offscreenCtx.fillStyle = '#000';
+        offscreenCtx.fillRect(0, 0, newWidth, newHeight);
+        
+        // Draw image with smoothing for mobile
+        offscreenCtx.imageSmoothingEnabled = true;
+        offscreenCtx.imageSmoothingQuality = 'high';
+        offscreenCtx.drawImage(img, 0, 0, newWidth, newHeight);
 
-        // Box
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x, y, w, h);
+        // Draw bounding boxes
+        const boxes = detection?.detections || [];
+        boxes.forEach(box => {
+          if (!box.w || !box.h) return;
+          const x = box.x * newWidth;
+          const y = box.y * newHeight;
+          const w = box.w * newWidth;
+          const h = box.h * newHeight;
+          const color = getLabelColor(box.label);
+          const label = `${(box.label || 'obj').toUpperCase()} ${Math.round((box.confidence||0)*100)}%`;
 
-        // Corner accents (L-shapes)
-        const cs = 12;
-        ctx.lineWidth = 3;
-        [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]].forEach(([cx,cy,dx,dy]) => {
-          ctx.beginPath(); ctx.moveTo(cx+dx*cs,cy); ctx.lineTo(cx,cy); ctx.lineTo(cx,cy+dy*cs); ctx.stroke();
+          // Box with anti-aliasing
+          offscreenCtx.strokeStyle = color;
+          offscreenCtx.lineWidth = 2;
+          offscreenCtx.setLineDash([]);
+          offscreenCtx.strokeRect(x, y, w, h);
+
+          // Corner accents (L-shapes)
+          const cs = 12;
+          offscreenCtx.lineWidth = 3;
+          [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]].forEach(([cx,cy,dx,dy]) => {
+            offscreenCtx.beginPath(); offscreenCtx.moveTo(cx+dx*cs,cy); offscreenCtx.lineTo(cx,cy); offscreenCtx.lineTo(cx,cy+dy*cs); offscreenCtx.stroke();
+          });
+
+          // Label chip with background
+          offscreenCtx.font = 'bold 11px monospace';
+          const tw = offscreenCtx.measureText(label).width;
+          offscreenCtx.fillStyle = color;
+          offscreenCtx.fillRect(x, y - 18, tw + 10, 18);
+          offscreenCtx.fillStyle = '#000';
+          offscreenCtx.fillText(label, x + 5, y - 4);
         });
 
-        // Label chip
-        ctx.font = 'bold 11px monospace';
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y - 18, tw + 10, 18);
-        ctx.fillStyle = '#000';
-        ctx.fillText(label, x + 5, y - 4);
+        // Subtle scan-line overlay
+        offscreenCtx.fillStyle = 'rgba(0,0,0,0.02)';
+        for (let i = 0; i < newHeight; i += 4) {
+          offscreenCtx.fillRect(0, i, newWidth, 2);
+        }
+        
+        // Copy from off-screen canvas to main canvas (atomic operation)
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(offscreenCanvas, 0, 0);
+        
+        // Schedule next frame if there's a pending one
+        if (pendingFrameRef.current) {
+          const pending = pendingFrameRef.current;
+          pendingFrameRef.current = null;
+          setTimeout(() => drawFrameOnCanvas(pending.base64Frame, pending.detection), frameThrottleMs);
+        }
       });
-
-      // Scan-line overlay
-      ctx.fillStyle = 'rgba(0,0,0,0.04)';
-      for (let i = 0; i < canvas.height; i += 4) {
-        ctx.fillRect(0, i, canvas.width, 2);
-      }
     };
+    
+    img.onerror = () => {
+      console.warn('Failed to load frame image');
+    };
+    
     img.src = `data:image/jpeg;base64,${base64Frame}`;
+  }, []);
+
+  // Smooth frame update for stream cards
+  const updateStreamCard = useCallback((streamId, frameData) => {
+    const now = Date.now();
+    const lastTime = streamFrameTimesRef.current[streamId] || 0;
+    
+    // Throttle updates for each stream individually
+    if (now - lastTime < frameThrottleMs) {
+      // Store the latest frame for this stream
+      streamPendingFramesRef.current[streamId] = frameData;
+      return;
+    }
+    
+    streamFrameTimesRef.current[streamId] = now;
+    
+    // Update the image element with smooth transition
+    const thumbEl = document.getElementById(`video-${streamId}`);
+    if (thumbEl) {
+      // Add fade effect for smooth transition
+      thumbEl.style.opacity = '0.8';
+      thumbEl.style.transition = 'opacity 0.1s ease-in-out';
+      
+      setTimeout(() => {
+        thumbEl.src = `data:image/jpeg;base64,${frameData}`;
+        thumbEl.style.display = 'block';
+        thumbEl.style.opacity = '1';
+        
+        const ph = document.getElementById(`placeholder-${streamId}`);
+        if (ph) ph.style.display = 'none';
+      }, 50);
+    }
+    
+    // Process any pending frames for this stream
+    setTimeout(() => {
+      const pending = streamPendingFramesRef.current[streamId];
+      if (pending) {
+        streamPendingFramesRef.current[streamId] = null;
+        updateStreamCard(streamId, pending);
+      }
+    }, frameThrottleMs);
   }, []);
 
   // Check AI service health on mount
@@ -431,6 +801,7 @@ const AdminCCTV = () => {
     return () => {
       clearInterval(interval);
       if (aiAnalyzeIntervalRef.current) clearInterval(aiAnalyzeIntervalRef.current);
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
       if (socketRef.current) socketRef.current.disconnect();
     };
   }, []);
@@ -522,14 +893,8 @@ const AdminCCTV = () => {
           socket.emit('ai-analyze-frame', { streamId: data.streamId, frame: data.frame });
         }
 
-        // Update thumbnail card (small img is fine for thumbnails)
-        const thumbEl = document.getElementById(`video-${data.streamId}`);
-        if (thumbEl) {
-          thumbEl.src = `data:image/jpeg;base64,${data.frame}`;
-          thumbEl.style.display = 'block';
-          const ph = document.getElementById(`placeholder-${data.streamId}`);
-          if (ph) ph.style.display = 'none';
-        }
+        // Update thumbnail card with smooth rendering
+        updateStreamCard(data.streamId, data.frame);
 
         // Draw frame + bounding boxes on modal canvas
         if (selectedStreamRef.current?.streamId === data.streamId) {
@@ -587,6 +952,68 @@ const AdminCCTV = () => {
     const a = document.createElement('a'); a.href = url;
     a.download = `ai-events-${Date.now()}.json`; a.click();
     URL.revokeObjectURL(url);
+  };
+
+  
+  const saveVideoClip = async () => {
+    if (!selectedStream || !streamFrames[selectedStream.streamId]) {
+      addAlert('No video frame available to save');
+      return;
+    }
+
+    try {
+      // Get the current frame from the stream
+      const currentFrame = streamFrames[selectedStream.streamId];
+      
+      // Create a canvas to capture the current video frame
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      
+      img.onload = () => {
+        // Set canvas dimensions to match the video
+        canvas.width = img.naturalWidth || 640;
+        canvas.height = img.naturalHeight || 360;
+        
+        // Draw the current frame
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        // Add timestamp and stream info overlay
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, canvas.height - 60, canvas.width, 60);
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px Arial';
+        ctx.fillText(`Camera: ${selectedStream.cameraName || 'Unknown'}`, 10, canvas.height - 35);
+        
+        ctx.font = '12px Arial';
+        ctx.fillText(`Stream ID: ${selectedStream.streamId}`, 10, canvas.height - 20);
+        ctx.fillText(`Location: ${streamPlaceNames[selectedStream.streamId] || selectedStream.location || 'Unknown'}`, 10, canvas.height - 5);
+        
+        ctx.font = '10px Arial';
+        ctx.fillText(`Time: ${new Date().toLocaleString()}`, canvas.width - 200, canvas.height - 5);
+        
+        // Convert canvas to blob and download
+        canvas.toBlob((blob) => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `cctv-clip-${selectedStream.cameraName || 'unknown'}-${Date.now()}.jpg`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          
+          addAlert(`Video clip saved: ${selectedStream.cameraName || 'Unknown Camera'}`);
+        }, 'image/jpeg', 0.9);
+      };
+      
+      img.src = `data:image/jpeg;base64,${currentFrame}`;
+      
+    } catch (error) {
+      console.error('Error saving video clip:', error);
+      addAlert('Failed to save video clip');
+    }
   };
 
   const addAlert = (message) => {
@@ -689,6 +1116,13 @@ const AdminCCTV = () => {
 
     if (socketRef.current && socketRef.current.connected) {
       socketRef.current.emit('join-stream', stream.streamId);
+    }
+
+    // Fetch place name for this stream if not already cached
+    if (stream.location && !streamPlaceNames[stream.streamId]) {
+      getPlaceName(stream.location, setPlaceNames).then(placeName => {
+        setStreamPlaceNames(prev => ({ ...prev, [stream.streamId]: placeName }));
+      });
     }
 
     const existingFrame = streamFrames[stream.streamId];
@@ -872,7 +1306,13 @@ const AdminCCTV = () => {
                       className="group relative bg-slate-800 rounded-2xl border border-red-500/50 overflow-hidden shadow-lg hover:shadow-red-500/20 hover:shadow-xl transition-all cursor-pointer hover:-translate-y-0.5">
                       <div className="relative aspect-video bg-slate-900 overflow-hidden">
                         <img id={`video-${stream.streamId}`} className="w-full h-full object-cover absolute inset-0"
-                          style={{ display: streamFrames[stream.streamId] ? 'block' : 'none' }} alt="Live" />
+                          style={{ 
+                            display: streamFrames[stream.streamId] ? 'block' : 'none',
+                            transition: 'opacity 0.1s ease-in-out',
+                            opacity: 1,
+                            imageRendering: 'auto',
+                            transform: 'translateZ(0)' // Hardware acceleration
+                          }} alt="Live" />
                         <div id={`placeholder-${stream.streamId}`} className="absolute inset-0 flex flex-col items-center justify-center"
                           style={{ display: streamFrames[stream.streamId] ? 'none' : 'flex' }}>
                           <Radio className="w-10 h-10 text-red-500 mb-2 animate-pulse" />
@@ -890,7 +1330,7 @@ const AdminCCTV = () => {
                         )}
                         <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-3">
                           <p className="text-white text-xs font-semibold">{stream.cameraName}</p>
-                          <p className="text-slate-400 text-[10px] flex items-center gap-1"><MapPin size={8} />{stream.location}</p>
+                          <p className="text-slate-400 text-[10px] flex items-center gap-1"><MapPin size={8} />{streamPlaceNames[stream.streamId] || stream.location}</p>
                         </div>
                       </div>
                       <div className="px-3 py-2 flex items-center justify-between">
@@ -1143,7 +1583,7 @@ const AdminCCTV = () => {
                     <span className="text-white font-bold text-sm">LIVE:</span>
                     <span className="text-red-300 font-semibold text-sm">{selectedStream.cameraName}</span>
                   </div>
-                  <span className="text-slate-400 text-xs flex items-center gap-1"><MapPin size={10} />{selectedStream.location}</span>
+                  <span className="text-slate-400 text-xs flex items-center gap-1"><MapPin size={10} />{streamPlaceNames[selectedStream?.streamId] || selectedStream?.location || 'Unknown'}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   {aiEnabled && (
@@ -1164,7 +1604,14 @@ const AdminCCTV = () => {
                 <canvas
                   ref={modalCanvasRef}
                   className="w-full h-full object-contain"
-                  style={{ display: streamFrames[selectedStream.streamId] ? 'block' : 'none', imageRendering: 'auto' }}
+                  style={{ 
+                    display: streamFrames[selectedStream.streamId] ? 'block' : 'none', 
+                    imageRendering: 'auto',
+                    imageRendering: '-webkit-optimize-contrast',
+                    imageRendering: 'crisp-edges',
+                    transform: 'translateZ(0)', // Hardware acceleration
+                    willChange: 'transform' // Optimize for animations
+                  }}
                 />
 
                 {/* Placeholder until first frame arrives */}
@@ -1219,7 +1666,7 @@ const AdminCCTV = () => {
                 <button className="flex-1 py-2 bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl text-xs font-bold hover:bg-red-500/30 transition-colors flex items-center justify-center gap-1.5">
                   <AlertTriangle size={13} /> Report Incident
                 </button>
-                <button className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors flex items-center justify-center gap-1.5">
+                <button onClick={saveVideoClip} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors flex items-center justify-center gap-1.5">
                   <Download size={13} /> Save Clip
                 </button>
                 <button onClick={closeStreamModal} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors">

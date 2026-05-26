@@ -22,11 +22,13 @@ import AdminResponders from "./pages/AdminResponders";
 import AdminHeatmap from "./pages/AdminHeatmap";
 import AdminSettings from "./pages/AdminSettings";
 import AdminCCTV from "./pages/AdminCCTV";
+import AdminContacts from "./pages/AdminContacts";
 
 // Responder Pages
 import ResponderDashboard from "./pages/ResponderDashboard";
 import ResponderIncidents from "./pages/ResponderIncidents";
 import ResponderCCTV from "./pages/ResponderCCTV";
+import ResponderAnalytics from "./pages/ResponderAnalytics";
 import ResponderSettings from "./pages/ResponderSettings";
 
 // Super Responder Pages
@@ -110,6 +112,12 @@ function App() {
           }
         />
         <Route
+          path="/admin/contacts"
+          element={
+            user?.role === "Admin" ? <AdminContacts /> : <Navigate to="/login" />
+          }
+        />
+        <Route
           path="/admin/settings"
           element={
             user?.role === "Admin" ? (
@@ -152,6 +160,16 @@ function App() {
           }
         />
         <Route
+          path="/responder/analytics"
+          element={
+            user?.role === "Responder" || user?.role === "SuperResponder" ? (
+              <ResponderAnalytics />
+            ) : (
+              <Navigate to="/login" />
+            )
+          }
+        />
+        <Route
           path="/responder/settings"
           element={
             user?.role === "Responder" ? (
@@ -174,6 +192,10 @@ function App() {
         <Route
           path="/super-responder/cctv"
           element={user?.role === "SuperResponder" ? <ResponderCCTV /> : <Navigate to="/login" />}
+        />
+        <Route
+          path="/super-responder/analytics"
+          element={user?.role === "SuperResponder" ? <ResponderAnalytics /> : <Navigate to="/login" />}
         />
         <Route
           path="/super-responder/settings"

@@ -1,5 +1,5 @@
 // src/pages/AdminSettings.js
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
 import PageHeader from "../layout/PageHeader";
 import axios from "axios";
@@ -15,6 +15,7 @@ const API_URL = "http://localhost:5000/api";
 const AdminSettings = () => {
   const user = JSON.parse(localStorage.getItem("user") || "{}");
   const [loading, setLoading] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(true);
   const [message, setMessage] = useState({ text: "", type: "" });
   
   // Profile state
@@ -25,7 +26,7 @@ const AdminSettings = () => {
   const [showPassword, setShowPassword] = useState(false);
   
   // System Settings
-  const [darkMode, setDarkMode] = useState(localStorage.getItem("darkMode") === "true");
+  const [darkMode, setDarkMode] = useState(false);
   const [notifications, setNotifications] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshInterval, setRefreshInterval] = useState(30);
@@ -43,6 +44,48 @@ const AdminSettings = () => {
   const [emailAlerts, setEmailAlerts] = useState(true);
   const [smsAlerts, setSmsAlerts] = useState(false);
   const [criticalOnly, setCriticalOnly] = useState(false);
+
+  // Fetch settings from backend
+  const fetchSettings = useCallback(async () => {
+    try {
+      setSettingsLoading(true);
+      const response = await axios.get(`${API_URL}/system-settings`);
+      const settings = response.data;
+      
+      // Update all settings states
+      setDarkMode(settings.dark_mode || false);
+      setAutoRefresh(settings.auto_refresh || true);
+      setRefreshInterval(settings.refresh_interval || 30);
+      setLanguage(settings.language || "en");
+      setDataRetention(settings.data_retention || 90);
+      setEmailAlerts(settings.email_alerts || true);
+      setSmsAlerts(settings.sms_alerts || false);
+      setCriticalOnly(settings.critical_only || false);
+      setBackupSchedule(settings.backup_schedule || "daily");
+      setTwoFactorAuth(settings.two_factor_auth || false);
+      setSessionTimeout(settings.session_timeout || 60);
+      
+      // Apply dark mode immediately
+      if (settings.dark_mode) {
+        document.documentElement.classList.add("dark");
+        localStorage.setItem("darkMode", "true");
+      } else {
+        document.documentElement.classList.remove("dark");
+        localStorage.setItem("darkMode", "false");
+      }
+      
+    } catch (error) {
+      console.error("Error fetching settings:", error);
+      showMessage("Error loading settings", "error");
+    } finally {
+      setSettingsLoading(false);
+    }
+  }, []);
+
+  // Load settings on component mount
+  useEffect(() => {
+    fetchSettings();
+  }, []);
 
   // Apply dark mode
   useEffect(() => {
@@ -85,19 +128,65 @@ const AdminSettings = () => {
     }
   };
 
-  const handleSaveSystemSettings = () => {
-    localStorage.setItem("autoRefresh", autoRefresh);
-    localStorage.setItem("refreshInterval", refreshInterval);
-    localStorage.setItem("language", language);
-    showMessage("System settings saved successfully!", "success");
+  const handleSaveSystemSettings = async () => {
+    setLoading(true);
+    try {
+      await axios.put(`${API_URL}/system-settings`, {
+        dark_mode: darkMode,
+        auto_refresh: autoRefresh,
+        refresh_interval: refreshInterval,
+        language: language,
+        data_retention: dataRetention
+      });
+      
+      // Also save to localStorage for immediate effect
+      localStorage.setItem("autoRefresh", autoRefresh);
+      localStorage.setItem("refreshInterval", refreshInterval);
+      localStorage.setItem("language", language);
+      
+      showMessage("System settings saved successfully!", "success");
+    } catch (error) {
+      console.error("Error saving system settings:", error);
+      showMessage("Error saving system settings", "error");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleSaveSecuritySettings = () => {
-    showMessage("Security settings saved successfully!", "success");
+  const handleSaveSecuritySettings = async () => {
+    setLoading(true);
+    try {
+      await axios.put(`${API_URL}/system-settings`, {
+        two_factor_auth: twoFactorAuth,
+        session_timeout: sessionTimeout
+      });
+      
+      showMessage("Security settings saved successfully!", "success");
+    } catch (error) {
+      console.error("Error saving security settings:", error);
+      showMessage("Error saving security settings", "error");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleSaveNotificationSettings = () => {
-    showMessage("Notification settings saved successfully!", "success");
+  const handleSaveNotificationSettings = async () => {
+    setLoading(true);
+    try {
+      await axios.put(`${API_URL}/system-settings`, {
+        email_alerts: emailAlerts,
+        sms_alerts: smsAlerts,
+        critical_only: criticalOnly,
+        backup_schedule: backupSchedule
+      });
+      
+      showMessage("Notification settings saved successfully!", "success");
+    } catch (error) {
+      console.error("Error saving notification settings:", error);
+      showMessage("Error saving notification settings", "error");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleBackup = async () => {
@@ -161,7 +250,7 @@ const AdminSettings = () => {
           title="Settings"
           subtitle="Manage your account and system preferences"
           icon={<SettingsIcon size={16} />}
-          loading={loading}
+          loading={loading || settingsLoading}
           user={user}
         />
         {message.text && (
@@ -181,8 +270,9 @@ const AdminSettings = () => {
               <div className="space-y-4">
                 <SettingRow label="Full Name" description="Your display name in the system">
                   <input
+                    key="fullName"
                     type="text"
-                    className="w-full sm:w-80 px-4 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all dark:text-white"
+                    className="w-full sm:w-80 px-4 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all dark:text-white caret-emerald-600"
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
                   />
@@ -190,8 +280,9 @@ const AdminSettings = () => {
 
                 <SettingRow label="Phone Number" description="Contact number for SMS alerts">
                   <input
+                    key="phone"
                     type="tel"
-                    className="w-full sm:w-80 px-4 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all dark:text-white"
+                    className="w-full sm:w-80 px-4 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all dark:text-white caret-emerald-600"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                   />
@@ -199,8 +290,9 @@ const AdminSettings = () => {
 
                 <SettingRow label="Email Address" description="For email notifications">
                   <input
+                    key="email"
                     type="email"
-                    className="w-full sm:w-80 px-4 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all dark:text-white"
+                    className="w-full sm:w-80 px-4 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all dark:text-white caret-emerald-600"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                   />
@@ -209,8 +301,9 @@ const AdminSettings = () => {
                 <SettingRow label="Password" description="Leave blank to keep current">
                   <div className="relative w-full sm:w-80">
                     <input
+                      key="password"
                       type={showPassword ? "text" : "password"}
-                      className="w-full px-4 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all dark:text-white pr-10"
+                      className="w-full px-4 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all dark:text-white pr-10 caret-emerald-600"
                       placeholder="Enter new password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -295,9 +388,10 @@ const AdminSettings = () => {
                 <div className="pt-4">
                   <button
                     onClick={handleSaveSystemSettings}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-all"
+                    disabled={loading}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-all disabled:opacity-50"
                   >
-                    <Save size={18} />
+                    {loading ? <RefreshCw size={18} className="animate-spin" /> : <Save size={18} />}
                     Save System Settings
                   </button>
                 </div>
@@ -346,9 +440,10 @@ const AdminSettings = () => {
                 <div className="pt-4">
                   <button
                     onClick={handleSaveNotificationSettings}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-all"
+                    disabled={loading}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-all disabled:opacity-50"
                   >
-                    <Save size={18} />
+                    {loading ? <RefreshCw size={18} className="animate-spin" /> : <Save size={18} />}
                     Save Notification Settings
                   </button>
                 </div>
@@ -386,9 +481,10 @@ const AdminSettings = () => {
                 <div className="pt-4">
                   <button
                     onClick={handleSaveSecuritySettings}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-all"
+                    disabled={loading}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-all disabled:opacity-50"
                   >
-                    <Save size={18} />
+                    {loading ? <RefreshCw size={18} className="animate-spin" /> : <Save size={18} />}
                     Save Security Settings
                   </button>
                 </div>

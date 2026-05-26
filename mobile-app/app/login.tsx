@@ -28,6 +28,11 @@ export default function LoginScreen() {
   const [touched, setTouched] = useState({ email: false, password: false });
   const [loading, setLoading] = useState(false);
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotEmailError, setForgotEmailError] = useState('');
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetToken, setResetToken] = useState('');
   const router = useRouter();
 
   const checks = getChecks(password);
@@ -118,6 +123,71 @@ export default function LoginScreen() {
     router.replace('/(tabs)');
   };
 
+  const handleForgotPassword = () => {
+    setForgotEmail(email);
+    setForgotEmailError('');
+    setShowForgotPassword(true);
+  };
+
+  const handleResetPassword = async () => {
+    if (!forgotEmail) {
+      setForgotEmailError('Email is required');
+      return;
+    }
+    if (!EMAIL_REGEX.test(forgotEmail)) {
+      setForgotEmailError('Enter a valid email address');
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        if (data.resetToken) {
+          // Email service failed, show reset token
+          setResetToken(data.resetToken);
+          Alert.alert(
+            'Email Service Unavailable',
+            'Email service is temporarily unavailable. Use this reset link to reset your password:\n\n' + 
+            `safecity://reset-password?token=${data.resetToken}`,
+            [
+              { text: 'Copy Link', onPress: () => {
+                // In a real app, you'd copy to clipboard
+                console.log('Reset link:', `safecity://reset-password?token=${data.resetToken}`);
+              }},
+              { text: 'Open Reset Page', onPress: () => {
+                router.push(`/reset-password?token=${data.resetToken}`);
+                setShowForgotPassword(false);
+              }},
+              { text: 'Cancel', style: 'cancel' }
+            ]
+          );
+        } else {
+          // Email sent successfully
+          Alert.alert(
+            'Password Reset Email Sent',
+            'Check your email for instructions to reset your password.',
+            [{ text: 'OK', onPress: () => setShowForgotPassword(false) }]
+          );
+        }
+      } else {
+        setForgotEmailError(data.message || 'Failed to send reset email');
+      }
+    } catch (error) {
+      console.error('Reset Password Error:', error);
+      setForgotEmailError('Cannot connect to server. Check your connection.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   // Show loading screen while checking auth status
   if (checkingAuth) {
     return <AppLoader message="Checking session..." />;
@@ -190,6 +260,11 @@ export default function LoginScreen() {
             )}
           </TouchableOpacity>
 
+          {/* Forgot Password Button */}
+          <TouchableOpacity style={styles.forgotBtn} onPress={handleForgotPassword}>
+            <Text style={styles.forgotBtnText}>Forgot Password?</Text>
+          </TouchableOpacity>
+
           {/* Create Account Button */}
           <TouchableOpacity style={styles.createBtn} onPress={() => router.push('/register')}>
             <User size={20} color="#fff" />
@@ -205,6 +280,58 @@ export default function LoginScreen() {
 
         <Text style={[styles.linkText, {marginTop: 30}]}>Authorized personnel only</Text>
       </ScrollView>
+
+      {/* Forgot Password Modal */}
+      {showForgotPassword && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Reset Password</Text>
+              <TouchableOpacity onPress={() => setShowForgotPassword(false)}>
+                <Text style={styles.modalClose}>×</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <Text style={styles.modalDescription}>
+              Enter your email address and we'll send you instructions to reset your password.
+            </Text>
+
+            <View style={styles.inputContainer}>
+              <Mail size={20} color="#64748b"/>
+              <TextInput
+                style={styles.input}
+                placeholder="Email Address"
+                placeholderTextColor="#64748b"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                value={forgotEmail}
+                onChangeText={(v) => {
+                  setForgotEmail(v);
+                  setForgotEmailError('');
+                }}
+              />
+            </View>
+            {forgotEmailError && <Text style={styles.fieldError}>{forgotEmailError}</Text>}
+
+            <TouchableOpacity 
+              style={styles.resetBtn} 
+              onPress={handleResetPassword} 
+              disabled={resetLoading}
+            >
+              {resetLoading ? <ActivityIndicator color="#fff" /> : (
+                <Text style={styles.resetBtnText}>Send Reset Email</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              style={styles.cancelBtn} 
+              onPress={() => setShowForgotPassword(false)}
+            >
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </LinearGradient>
   );
 }
@@ -232,7 +359,80 @@ const styles = StyleSheet.create({
   createBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   guestBtn: { backgroundColor: 'transparent', height: 50, borderRadius: 15, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#E63939', marginTop: 10 },
   guestBtnText: { color: '#E63939', fontSize: 16, fontWeight: '600' },
+  forgotBtn: { marginTop: 15 },
+  forgotBtnText: { color: '#3b82f6', fontSize: 14, fontWeight: '600', textAlign: 'center' },
   linkText: { color: '#64748b', textAlign: 'center', fontSize: 14 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loadingText: { color: '#fff', marginTop: 10, fontSize: 14 }
+  loadingText: { color: '#fff', marginTop: 10, fontSize: 14 },
+  // Modal styles
+  modalOverlay: { 
+    position: 'absolute', 
+    top: 0, 
+    left: 0, 
+    right: 0, 
+    bottom: 0, 
+    backgroundColor: 'rgba(0, 0, 0, 0.7)', 
+    justifyContent: 'center', 
+    alignItems: 'center',
+    paddingHorizontal: 30
+  },
+  modalContainer: { 
+    backgroundColor: '#1e293b', 
+    borderRadius: 20, 
+    padding: 25, 
+    width: '100%', 
+    maxWidth: 400,
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  modalHeader: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    marginBottom: 20 
+  },
+  modalTitle: { 
+    color: '#fff', 
+    fontSize: 20, 
+    fontWeight: 'bold' 
+  },
+  modalClose: { 
+    color: '#64748b', 
+    fontSize: 24, 
+    fontWeight: 'bold' 
+  },
+  modalDescription: { 
+    color: '#94a3b8', 
+    fontSize: 14, 
+    marginBottom: 20, 
+    lineHeight: 20 
+  },
+  resetBtn: { 
+    backgroundColor: '#E63939', 
+    height: 50, 
+    borderRadius: 12, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginTop: 10 
+  },
+  resetBtnText: { 
+    color: '#fff', 
+    fontSize: 16, 
+    fontWeight: 'bold' 
+  },
+  cancelBtn: { 
+    backgroundColor: 'transparent', 
+    height: 45, 
+    borderRadius: 12, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    borderWidth: 1, 
+    borderColor: '#334155', 
+    marginTop: 10 
+  },
+  cancelBtnText: { 
+    color: '#64748b', 
+    fontSize: 14, 
+    fontWeight: '600' 
+  }
 });

@@ -9,10 +9,19 @@ import tempfile
 import base64
 import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from collections import defaultdict
+from typing import List, Dict, Any, Optional, Tuple
+from collections import defaultdict, deque
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+
+# Numerical operations for advanced detection
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+    print("⚠️  NumPy not installed. Some advanced features disabled.")
 
 # Try to import PIL
 try:
@@ -159,6 +168,38 @@ EMERGENCY_MAPPING = {
         'priority': 'Critical',
         'response': 'Dispatch Fire Brigade & Ambulance immediately',
         'weight': 10
+    },
+    'flame': {
+        'type': 'Open Flame Detected — Fire Risk',
+        'category': 'Fire & Explosion',
+        'severity': 'High',
+        'priority': 'Critical',
+        'response': 'Dispatch Fire Brigade — potential fire hazard',
+        'weight': 9
+    },
+    'candle': {
+        'type': 'Candle Fire — Unattended Flame',
+        'category': 'Fire & Explosion',
+        'severity': 'High',
+        'priority': 'High',
+        'response': 'Alert security — unattended open flame detected',
+        'weight': 7
+    },
+    'lighter': {
+        'type': 'Lighter/Ignition Source Detected',
+        'category': 'Fire & Explosion',
+        'severity': 'Medium',
+        'priority': 'Medium',
+        'response': 'Monitor — potential arson/fire risk',
+        'weight': 5
+    },
+    'torch': {
+        'type': 'Torch/Flame Device Detected',
+        'category': 'Fire & Explosion',
+        'severity': 'High',
+        'priority': 'High',
+        'response': 'Investigate — open flame in public area',
+        'weight': 7
     },
     'smoke': {
         'type': 'Smoke Detected — Possible Fire',
@@ -352,9 +393,212 @@ def extract_frame_from_video(video_bytes: bytes) -> Image.Image:
         logger.error(f"Error extracting frame: {e}")
         raise
 
-def map_detection_to_incident(label: str, confidence: float) -> Dict[str, Any]:
+def classify_fire_size(bbox_area_ratio: float) -> Dict[str, Any]:
+    """
+    Classify fire size based on bounding box area relative to image.
+    
+    Args:
+        bbox_area_ratio: Area of fire bbox / Total image area (0.0 to 1.0)
+    
+    Returns:
+        Dict with fire size classification and adjusted severity
+    """
+    if bbox_area_ratio < 0.01:  # Less than 1% of image
+        return {
+            'size_class': 'Small',
+            'size_description': 'Small fire — Candle/Minor flame',
+            'severity_adjustment': -1,  # Reduce severity
+            'response_modifier': 'Minor incident — monitor closely'
+        }
+    elif bbox_area_ratio < 0.05:  # 1-5% of image
+        return {
+            'size_class': 'Medium',
+            'size_description': 'Medium fire — Trash/Container fire',
+            'severity_adjustment': 0,
+            'response_modifier': 'Standard response'
+        }
+    elif bbox_area_ratio < 0.15:  # 5-15% of image
+        return {
+            'size_class': 'Large',
+            'size_description': 'Large fire — Room/Vehicle fire',
+            'severity_adjustment': 1,
+            'response_modifier': 'Urgent — multiple units'
+        }
+    else:  # More than 15% of image
+        return {
+            'size_class': 'Major',
+            'size_description': 'Major fire — Building/Structure fire',
+            'severity_adjustment': 2,
+            'response_modifier': 'EMERGENCY — full brigade dispatch'
+        }
+
+
+def is_fire_related(label: str) -> bool:
+    """Check if detection label is fire-related"""
+    fire_labels = {'fire', 'flame', 'candle', 'lighter', 'torch', 'smoke'}
+    return label.lower() in fire_labels
+
+
+def detect_fire_by_color(img, debug: bool = False) -> List[Dict[str, Any]]:
+    """
+    Detect fire using color analysis (HSV) as fallback when YOLO fails.
+    Fire typically appears as bright orange/yellow/red in images.
+    
+    Args:
+        img: PIL Image
+        debug: If True, prints debug information
+    
+    Returns list of detected fire regions with confidence scores.
+    """
+    if not CV2_AVAILABLE or not PIL_AVAILABLE:
+        logger.warning("OpenCV or PIL not available for color fire detection")
+        return []
+    
+    try:
+        # Convert PIL image to OpenCV format
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        img_hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
+        
+        fire_detections = []
+        
+        # Define fire color ranges in HSV - IMPROVED for candle flames
+        # Fire colors: bright orange (15-25), yellow (25-40), red (0-10, 170-180)
+        # Lowered saturation and value thresholds to catch more flames
+        fire_color_ranges = [
+            # Lower red (0-10 hue) - lowered thresholds
+            (np.array([0, 80, 150]), np.array([10, 255, 255])),
+            # Upper red (170-180 hue) - lowered thresholds
+            (np.array([170, 80, 150]), np.array([180, 255, 255])),
+            # Orange (10-25 hue) - good for flames
+            (np.array([10, 100, 150]), np.array([25, 255, 255])),
+            # Yellow (25-40 hue) - widened range for bright candle flames
+            (np.array([25, 80, 180]), np.array([40, 255, 255])),
+            # Bright yellow-white core of flame (high value, any hue)
+            (np.array([15, 30, 220]), np.array([45, 200, 255])),
+            # Very bright white/yellow (candle core)
+            (np.array([20, 20, 240]), np.array([50, 180, 255]))
+        ]
+        
+        # Create combined mask
+        combined_mask = np.zeros(img_hsv.shape[:2], dtype=np.uint8)
+        
+        for lower, upper in fire_color_ranges:
+            mask = cv2.inRange(img_hsv, lower, upper)
+            combined_mask = cv2.bitwise_or(combined_mask, mask)
+        
+        # Clean up mask
+        kernel = np.ones((5, 5), np.uint8)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+        
+        # Find contours
+        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        img_h, img_w = img_cv.shape[:2]
+        img_area = img_h * img_w
+        
+        if debug:
+            logger.info(f"🔥 Color fire detection: Found {len(contours)} raw contours")
+            # Debug: save mask for inspection
+            debug_path = f"fire_mask_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+            cv2.imwrite(debug_path, combined_mask)
+            logger.info(f"🔥 Debug mask saved to: {debug_path}")
+        
+        valid_contours = 0
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            
+            # Filter small noise (min area threshold) - LOWERED for small candle flames
+            if area < 30:  # Skip very small regions (was 100, now 30)
+                continue
+            
+            valid_contours += 1
+            
+            # Calculate bounding box
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Calculate fire characteristics
+            bbox_area_ratio = (w * h) / img_area
+            
+            # Calculate brightness in the region (fire is bright)
+            roi = img_hsv[y:y+h, x:x+w]
+            if roi.size > 0:
+                avg_brightness = np.mean(roi[:, :, 2])  # Value channel
+                brightness_score = min(1.0, avg_brightness / 255.0)
+            else:
+                brightness_score = 0.5
+            
+            # Calculate circularity (fire tends to be irregular/round)
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter > 0:
+                circularity = 4 * np.pi * area / (perimeter ** 2)
+            else:
+                circularity = 0
+            
+            # Determine fire type based on size
+            if bbox_area_ratio < 0.005:
+                fire_type = "Small Flame/Candle Fire"
+                confidence = min(0.85, 0.5 + brightness_score * 0.3 + bbox_area_ratio * 10)
+            elif bbox_area_ratio < 0.02:
+                fire_type = "Open Flame Detected"
+                confidence = min(0.90, 0.6 + brightness_score * 0.3)
+            else:
+                fire_type = "Fire Emergency"
+                confidence = min(0.95, 0.7 + brightness_score * 0.25)
+            
+            # Boost confidence for high brightness (strong fire indicator)
+            if brightness_score > 0.9:
+                confidence = min(0.98, confidence + 0.1)
+            
+            # Create display-friendly label
+            if bbox_area_ratio < 0.005:
+                display_label = "candle"
+            elif bbox_area_ratio < 0.02:
+                display_label = "flame"
+            else:
+                display_label = "fire"
+            
+            fire_detections.append({
+                "type": fire_type,
+                "category": "Fire & Explosion",
+                "severity": "High" if bbox_area_ratio < 0.01 else "Critical",
+                "priority": "High" if bbox_area_ratio < 0.01 else "Critical",
+                "confidence": round(confidence, 2),
+                "response": "Alert security — unattended flame detected" if bbox_area_ratio < 0.01 else "Dispatch Fire Brigade immediately",
+                "weight": 7 if bbox_area_ratio < 0.01 else 10,
+                "label": display_label,  # Display-friendly label for dashboard
+                "raw_label": "fire_color_detected",
+                "detection_method": "color_analysis",
+                "fire_size": classify_fire_size(bbox_area_ratio),
+                "bbox": {
+                    "x": round(x / img_w, 4),
+                    "y": round(y / img_h, 4),
+                    "w": round(w / img_w, 4),
+                    "h": round(h / img_h, 4)
+                },
+                "brightness_score": round(brightness_score, 2),
+                "circularity": round(circularity, 2),
+                "pixel_area": int(area)
+            })
+        
+        # Sort by confidence
+        fire_detections.sort(key=lambda x: x['confidence'], reverse=True)
+        
+        if debug or fire_detections:
+            logger.info(f"🔥 Color fire detection: Found {len(fire_detections)} valid fire region(s) from {valid_contours} contours")
+        
+        return fire_detections
+        
+    except Exception as e:
+        logger.error(f"Color-based fire detection error: {e}")
+        return []
+
+
+def map_detection_to_incident(label: str, confidence: float, 
+                              bbox_area_ratio: float = 0.0) -> Dict[str, Any]:
     """Map a single detection to Ethiopian-context incident type.
-    Objects not in the known classification → 'Out of Common Incidents'."""
+    Objects not in the known classification → 'Out of Common Incidents'.
+    Includes fire size classification for fire-related detections."""
 
     label_lower = label.lower()
 
@@ -387,8 +631,30 @@ def map_detection_to_incident(label: str, confidence: float) -> Dict[str, Any]:
             weight += 2
         elif confidence > 0.75:
             weight += 1
-
-    return {
+    
+    # Fire size classification for fire-related incidents
+    fire_size_info = None
+    if is_fire_related(label) and bbox_area_ratio > 0:
+        fire_size_info = classify_fire_size(bbox_area_ratio)
+        
+        # Adjust severity and response based on fire size
+        if fire_size_info['size_class'] == 'Small':
+            # Small fire (candle) - reduce severity but still alert
+            if severity == 'Critical':
+                severity = 'High'
+            incident_type = f"Small Fire Detected — {fire_size_info['size_description']}"
+            response = fire_size_info['response_modifier']
+            weight = max(5, weight - 2)  # Reduce weight but keep significant
+            
+        elif fire_size_info['size_class'] == 'Major':
+            # Major fire - escalate
+            severity = 'Critical'
+            priority = 'Critical'
+            incident_type = f"MAJOR FIRE — {fire_size_info['size_description']}"
+            response = fire_size_info['response_modifier']
+            weight = min(12, weight + 2)  # Increase weight, cap at 12
+    
+    result = {
         "type":       incident_type,
         "category":   category,
         "confidence": round(confidence, 2),
@@ -398,6 +664,12 @@ def map_detection_to_incident(label: str, confidence: float) -> Dict[str, Any]:
         "weight":     weight,
         "raw_label":  label
     }
+    
+    # Add fire size info if applicable
+    if fire_size_info:
+        result["fire_size"] = fire_size_info
+    
+    return result
 
 def analyze_all_objects(img) -> List[Dict[str, Any]]:
     """Detect all objects in the image and return list of incidents"""
@@ -406,15 +678,27 @@ def analyze_all_objects(img) -> List[Dict[str, Any]]:
     try:
         results = yolo_model(img)
         
+        # Get image dimensions for fire size calculation
+        img_w, img_h = img.size if PIL_AVAILABLE else (640, 480)
+        img_area = img_w * img_h
+        
         for r in results:
             if len(r.boxes) > 0:
                 for box in r.boxes:
                     label = yolo_model.names[int(box.cls[0])]
                     confidence = float(box.conf[0])
                     
+                    # Calculate bounding box area ratio for fire size classification
+                    bbox_area_ratio = 0.0
+                    if is_fire_related(label):
+                        xyxy = box.xyxy[0].tolist()
+                        x1, y1, x2, y2 = xyxy
+                        bbox_area = (x2 - x1) * (y2 - y1)
+                        bbox_area_ratio = bbox_area / img_area if img_area > 0 else 0.0
+                    
                     # Only include detections with confidence > 0.3
                     if confidence > 0.3:
-                        incident = map_detection_to_incident(label, confidence)
+                        incident = map_detection_to_incident(label, confidence, bbox_area_ratio)
                         detections.append(incident)
                         logger.debug(f"  - {label}: {confidence:.2f} -> {incident['type']}")
         
@@ -659,6 +943,51 @@ async def get_metrics():
     
     return metrics
 
+@app.post("/test_fire_detection")
+async def test_fire_detection(image: UploadFile = File(...)):
+    """
+    Debug endpoint to test color-based fire detection directly.
+    Bypasses YOLO and uses only color analysis.
+    """
+    try:
+        data = await image.read()
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        
+        logger.info(f"🔥 Testing fire detection on: {image.filename}")
+        
+        # Run color-based fire detection with debug enabled
+        fire_detections = detect_fire_by_color(img, debug=True)
+        
+        if fire_detections:
+            return {
+                "success": True,
+                "method": "color_analysis_only",
+                "fire_detected": True,
+                "detections": fire_detections,
+                "total": len(fire_detections),
+                "most_severe": fire_detections[0] if fire_detections else None
+            }
+        else:
+            return {
+                "success": True,
+                "method": "color_analysis_only",
+                "fire_detected": False,
+                "message": "No fire detected by color analysis",
+                "suggestions": [
+                    "Fire may be too small or dim",
+                    "Image may be too dark",
+                    "Try with brighter flame image",
+                    "Check if OpenCV is working properly"
+                ]
+            }
+    except Exception as e:
+        logger.error(f"Fire detection test failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Test failed - check if OpenCV and PIL are installed"
+        }
+
 @app.post("/analyze")
 async def analyze_image(image: UploadFile = File(...)):
     """Analyze image or video for emergency incidents"""
@@ -710,19 +1039,40 @@ async def analyze_image(image: UploadFile = File(...)):
                 result = get_most_severe_incident(detections)
                 logger.info(f"✅ Detected {len(detections)} objects. Most severe: {result['type']}")
                 
+                # Check if any fire-related objects were detected
+                fire_detected = any(
+                    is_fire_related(d.get('raw_label', '')) or 'fire' in d.get('type', '').lower()
+                    for d in detections
+                )
+                
+                # If no fire detected, try color-based fire detection as fallback
+                if not fire_detected and img and CV2_AVAILABLE:
+                    logger.info("🔥 No fire detected by YOLO, trying color-based detection...")
+                    color_fire_detections = detect_fire_by_color(img)
+                    
+                    if color_fire_detections:
+                        logger.info(f"✅ Color-based detection found {len(color_fire_detections)} fire region(s)")
+                        # Add color detections to the list
+                        detections.extend(color_fire_detections)
+                        # Re-sort and get most severe
+                        detections.sort(key=lambda x: x['weight'], reverse=True)
+                        result = get_most_severe_incident(detections)
+                
                 response_data = {
                     **result,
-                    "ai_engine": "YOLOv8 (Multi-Object)",
+                    "ai_engine": "YOLOv8 + Color Analysis" if any(d.get('detection_method') == 'color_analysis' for d in detections) else "YOLOv8 (Multi-Object)",
                     "processing_time_ms": processing_time,
                     "is_video": is_video,
                     "image_analysis": {
                         "total_detections": len(detections),
+                        "fire_detected_by": "color_analysis" if any(d.get('detection_method') == 'color_analysis' for d in detections) else "yolo",
                         "all_detections": [
                             {
                                 "type": d['type'],
                                 "confidence": d['confidence'],
                                 "severity": d['severity'],
-                                "priority": d['priority']
+                                "priority": d['priority'],
+                                "detection_method": d.get('detection_method', 'yolo')
                             }
                             for d in detections
                         ]
@@ -738,8 +1088,32 @@ async def analyze_image(image: UploadFile = File(...)):
                 
                 return response_data
             else:
+                # YOLO detected nothing - try color-based fire detection
+                color_fire_detections = []
+                if img and CV2_AVAILABLE:
+                    logger.info("🔥 YOLO detected nothing, trying color-based fire detection...")
+                    color_fire_detections = detect_fire_by_color(img)
+                
                 processing_time = round((time.time() - request_start) * 1000, 2)
                 performance_metrics['processing_times'].append(processing_time)
+                
+                if color_fire_detections:
+                    logger.info(f"✅ Color-based detection found fire: {color_fire_detections[0]['type']}")
+                    result = get_most_severe_incident(color_fire_detections)
+                    return {
+                        **result,
+                        "ai_engine": "Color Analysis (Fire Detection)",
+                        "processing_time_ms": processing_time,
+                        "is_video": is_video,
+                        "detections": color_fire_detections,
+                        "total_objects_detected": len(color_fire_detections),
+                        "image_analysis": {
+                            "total_detections": len(color_fire_detections),
+                            "fire_detected_by": "color_analysis",
+                            "all_detections": color_fire_detections
+                        }
+                    }
+                
                 logger.info("No objects detected")
                 return {
                     "type": "No Clear Emergency Detected",
@@ -1038,7 +1412,14 @@ def analyze_with_boxes(img) -> List[Dict[str, Any]]:
                 w_norm = round((x2 - x1) / img_w, 4)
                 h_norm = round((y2 - y1) / img_h, 4)
 
-                incident = map_detection_to_incident(label, confidence)
+                # Calculate bbox area ratio for fire size classification
+                bbox_area_ratio = 0.0
+                if is_fire_related(label):
+                    bbox_area = (x2 - x1) * (y2 - y1)
+                    img_area = img_w * img_h
+                    bbox_area_ratio = bbox_area / img_area if img_area > 0 else 0.0
+                
+                incident = map_detection_to_incident(label, confidence, bbox_area_ratio)
                 detections.append({
                     **incident,
                     "track_id": f"T{i+1:02d}",
@@ -1051,6 +1432,25 @@ def analyze_with_boxes(img) -> List[Dict[str, Any]]:
                         "cy": cy
                     }
                 })
+        
+        # Check if any fire-related objects were detected by YOLO
+        fire_detected_yolo = any(
+            is_fire_related(d.get('raw_label', '')) or 'fire' in d.get('type', '').lower()
+            for d in detections
+        )
+        
+        # If no fire detected by YOLO, try color-based fire detection
+        if not fire_detected_yolo and img and CV2_AVAILABLE:
+            logger.debug("🔥 No fire detected by YOLO in boxes, trying color analysis...")
+            color_fire_detections = detect_fire_by_color(img)
+            
+            if color_fire_detections:
+                logger.info(f"✅ Color-based detection found {len(color_fire_detections)} fire region(s) in stream")
+                # Convert color detections to box format with track_ids
+                for i, fire_det in enumerate(color_fire_detections):
+                    fire_det['track_id'] = f"F{i+1:02d}"  # Fire detection track ID
+                    detections.append(fire_det)
+        
         detections.sort(key=lambda x: x["weight"], reverse=True)
     except Exception as e:
         logger.error(f"Box detection error: {e}")
@@ -1123,6 +1523,324 @@ async def stream_analyze_ws(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
 
+
+# ============================================================================
+# ADVANCED DETECTION ENDPOINTS
+# ============================================================================
+
+# Global ensemble detector instance (maintains state across calls)
+ensemble_detector = None
+
+def get_ensemble_detector():
+    """Get or create ensemble detector singleton"""
+    global ensemble_detector
+    if ensemble_detector is None:
+        from advanced_detection import EnsembleDetector, DetectionConfig
+        config = DetectionConfig(
+            temporal_window=5,
+            min_detection_frames=3,
+            base_confidence_threshold=0.3,
+            velocity_threshold=50
+        )
+        ensemble_detector = EnsembleDetector(config)
+    return ensemble_detector
+
+@app.post("/analyze_advanced")
+async def analyze_advanced(image: UploadFile = File(...)):
+    """
+    Advanced analysis with temporal tracking, behavior analysis, and anomaly detection.
+    
+    Features:
+    - Multi-frame temporal consistency
+    - Object tracking with velocity calculation
+    - Crowd panic detection
+    - Violence/fighting detection
+    - Anomaly detection based on historical baseline
+    - Scene context analysis
+    - Confidence boosting ensemble
+    """
+    request_start = time.time()
+    
+    try:
+        # Check if advanced detection is available
+        try:
+            from advanced_detection import EnsembleDetector, DetectionConfig, draw_tracks_on_frame
+        except ImportError as e:
+            logger.warning(f"Advanced detection not available: {e}")
+            # Fallback to basic analysis
+            return await analyze_image(image)
+        
+        # Read and process image
+        data = await image.read()
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        
+        # Convert to format for OpenCV if needed
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR) if CV2_AVAILABLE else None
+        
+        # Get base YOLO detections
+        base_detections = analyze_with_boxes(img)
+        
+        # Convert to format expected by advanced detector
+        detector_input = []
+        for det in base_detections:
+            bbox = det.get('bbox', {})
+            detector_input.append({
+                'label': det.get('raw_label', 'unknown'),
+                'confidence': det.get('confidence', 0),
+                'bbox': (
+                    int(bbox.get('x', 0) * img.width),
+                    int(bbox.get('y', 0) * img.height),
+                    int(bbox.get('w', 0.1) * img.width),
+                    int(bbox.get('h', 0.1) * img.height)
+                )
+            })
+        
+        # Process with ensemble detector
+        detector = get_ensemble_detector()
+        ensemble_result = detector.process_frame(detector_input, (img.width, img.height))
+        
+        processing_time = round((time.time() - request_start) * 1000, 2)
+        performance_metrics['processing_times'].append(processing_time)
+        performance_metrics['requests'].append(datetime.now().isoformat())
+        
+        # Determine most severe incident from enhanced detections
+        most_severe = None
+        if ensemble_result['enhanced_detections']:
+            # Find detection with highest effective weight
+            max_weight = 0
+            for det in ensemble_result['enhanced_detections'][:5]:
+                label = det['label']
+                # Get base weight from emergency mapping
+                base_weight = EMERGENCY_MAPPING.get(label, {}).get('weight', 1)
+                # Boost by confidence and speed
+                effective_weight = base_weight * det['confidence']
+                if det.get('is_fast'):
+                    effective_weight *= 1.2
+                
+                if effective_weight > max_weight:
+                    max_weight = effective_weight
+                    mapping = EMERGENCY_MAPPING.get(label, {
+                        'type': f"Unknown Emergency ({label})",
+                        'severity': 'Medium',
+                        'priority': 'Medium',
+                        'response': 'Monitor and investigate'
+                    })
+                    most_severe = {
+                        'type': mapping.get('type', f"Incident: {label}"),
+                        'severity': mapping.get('severity', 'Medium'),
+                        'priority': mapping.get('priority', 'Medium'),
+                        'response': mapping.get('response', 'Monitor'),
+                        'confidence': det['confidence'],
+                        'object_type': label
+                    }
+        
+        # Check behavior alerts (override if more severe)
+        behavior_severe = None
+        for alert in ensemble_result.get('behavior_alerts', []):
+            if alert['severity'] in ['Critical', 'High']:
+                if behavior_severe is None or alert['severity'] == 'Critical':
+                    behavior_severe = {
+                        'type': alert['type'],
+                        'severity': alert['severity'],
+                        'priority': alert['priority'],
+                        'confidence': alert['confidence'],
+                        'details': alert.get('details', {})
+                    }
+        
+        # Use behavior alert if more severe
+        final_result = behavior_severe if behavior_severe else most_severe
+        
+        # Check anomalies
+        anomaly_severe = None
+        for anomaly in ensemble_result.get('anomalies', []):
+            if anomaly['severity'] in ['Critical', 'High']:
+                anomaly_severe = {
+                    'type': anomaly['type'],
+                    'severity': anomaly['severity'],
+                    'priority': anomaly['priority'],
+                    'confidence': anomaly['confidence']
+                }
+                break
+        
+        # Build comprehensive response
+        response = {
+            "success": True,
+            "ai_engine": "YOLOv8 + Advanced Ensemble (v4.0)",
+            "processing_time_ms": processing_time,
+            "timestamp": datetime.now().isoformat(),
+            
+            # Primary incident (most severe)
+            "type": final_result['type'] if final_result else "No Clear Emergency Detected",
+            "severity": final_result['severity'] if final_result else "Low",
+            "priority": final_result['priority'] if final_result else "Normal",
+            "confidence": round(final_result['confidence'], 3) if final_result else 0,
+            "response_action": final_result.get('response', 'Monitor') if final_result else None,
+            
+            # Scene context
+            "scene_analysis": {
+                "scene_type": ensemble_result.get('scene_type', 'unknown'),
+                "total_objects": ensemble_result.get('total_tracked_objects', 0),
+                "object_distribution": ensemble_result.get('object_counts', {}),
+                "is_calibrated": ensemble_result.get('is_calibrated', False)
+            },
+            
+            # Detailed detections
+            "enhanced_detections": ensemble_result.get('enhanced_detections', [])[:10],
+            
+            # Behavior alerts
+            "behavior_alerts": ensemble_result.get('behavior_alerts', []),
+            "behavior_alert_count": len(ensemble_result.get('behavior_alerts', [])),
+            
+            # Anomalies
+            "anomalies": ensemble_result.get('anomalies', []),
+            "anomaly_count": len(ensemble_result.get('anomalies', [])),
+            
+            # Alternative incidents (if behavior alert was primary)
+            "alternative_incidents": [most_severe] if behavior_severe and most_severe else [],
+            
+            # Processing metadata
+            "advanced_features_used": [
+                "temporal_tracking",
+                "velocity_analysis", 
+                "behavior_detection",
+                "anomaly_detection",
+                "scene_context"
+            ]
+        }
+        
+        logger.info(f"✅ Advanced analysis: {response['type']} (confidence: {response['confidence']:.2f})")
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Advanced analysis failed: {e}", exc_info=True)
+        performance_metrics['errors'].append(str(e))
+        # Fallback to basic analysis
+        try:
+            image.file.seek(0)
+            return await analyze_image(image)
+        except:
+            raise HTTPException(status_code=500, detail=f"Advanced analysis failed: {str(e)}")
+
+
+@app.post("/analyze_track_sequence")
+async def analyze_track_sequence(frames: List[UploadFile] = File(...)):
+    """
+    Analyze a sequence of frames for temporal tracking and behavior analysis.
+    Upload multiple frames to track objects across time.
+    """
+    from advanced_detection import EnsembleDetector, DetectionConfig, create_detection_summary
+    
+    request_start = time.time()
+    
+    if len(frames) < 2:
+        raise HTTPException(status_code=400, detail="Please provide at least 2 frames for sequence analysis")
+    
+    try:
+        # Create fresh detector for this sequence
+        config = DetectionConfig(
+            temporal_window=len(frames),
+            min_detection_frames=2,
+            max_track_age=len(frames) + 5
+        )
+        detector = EnsembleDetector(config)
+        
+        frame_results = []
+        
+        for i, frame_file in enumerate(frames):
+            data = await frame_file.read()
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            
+            # Get base detections
+            base_detections = analyze_with_boxes(img)
+            
+            # Convert format
+            detector_input = []
+            for det in base_detections:
+                bbox = det.get('bbox', {})
+                detector_input.append({
+                    'label': det.get('raw_label', 'unknown'),
+                    'confidence': det.get('confidence', 0),
+                    'bbox': (
+                        int(bbox.get('x', 0) * img.width),
+                        int(bbox.get('y', 0) * img.height),
+                        int(bbox.get('w', 0.1) * img.width),
+                        int(bbox.get('h', 0.1) * img.height)
+                    )
+                })
+            
+            # Process frame
+            result = detector.process_frame(detector_input, (img.width, img.height))
+            frame_results.append(result)
+        
+        processing_time = round((time.time() - request_start) * 1000, 2)
+        
+        # Compile sequence analysis
+        all_alerts = []
+        all_anomalies = []
+        max_confidence = 0
+        most_severe_frame = None
+        
+        for i, result in enumerate(frame_results):
+            all_alerts.extend(result.get('behavior_alerts', []))
+            all_anomalies.extend(result.get('anomalies', []))
+            
+            # Find max confidence detection
+            for det in result.get('enhanced_detections', []):
+                if det['confidence'] > max_confidence:
+                    max_confidence = det['confidence']
+                    most_severe_frame = i
+        
+        return {
+            "success": True,
+            "ai_engine": "YOLOv8 + Sequence Tracking",
+            "frames_analyzed": len(frames),
+            "processing_time_ms": processing_time,
+            "sequence_analysis": {
+                "total_behavior_alerts": len(all_alerts),
+                "unique_alerts": list({a['type'] for a in all_alerts}),
+                "total_anomalies": len(all_anomalies),
+                "max_confidence": round(max_confidence, 3),
+                "most_severe_frame": most_severe_frame,
+                "frame_summaries": [create_detection_summary(r) for r in frame_results]
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Sequence analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/detection_config")
+async def get_detection_config():
+    """Get current advanced detection configuration"""
+    try:
+        from advanced_detection import DetectionConfig
+        config = DetectionConfig()
+        return {
+            "temporal_window": config.temporal_window,
+            "min_detection_frames": config.min_detection_frames,
+            "base_confidence_threshold": config.base_confidence_threshold,
+            "velocity_threshold": config.velocity_threshold,
+            "crowd_threshold": config.crowd_threshold,
+            "panic_velocity_threshold": config.panic_velocity_threshold,
+            "anomaly_threshold": config.anomaly_threshold
+        }
+    except ImportError:
+        return {"error": "Advanced detection module not available"}
+
+
+@app.post("/reset_tracker")
+async def reset_tracker():
+    """Reset the ensemble tracker (useful when switching cameras/scenes)"""
+    global ensemble_detector
+    ensemble_detector = None
+    return {"success": True, "message": "Tracker reset successfully"}
+
+
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
     import uvicorn

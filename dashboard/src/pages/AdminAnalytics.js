@@ -1,11 +1,12 @@
 // src/pages/AdminAnalytics.js
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
 import PageHeader from "../layout/PageHeader";
 import { 
   TrendingUp, AlertTriangle, Clock, Users, 
   Calendar, MapPin, Activity, RefreshCw, Download,
-  TrendingDown, TrendingUp as TrendingUpIcon, BarChart3, PieChart as PieChartIcon
+  TrendingDown, TrendingUp as TrendingUpIcon, BarChart3, PieChart as PieChartIcon,
+  FileText
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
@@ -13,6 +14,8 @@ import {
   LineChart, Line, AreaChart, Area
 } from "recharts";
 import axios from "axios";
+import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 
 const API_URL = "http://localhost:5000/api";
 
@@ -22,6 +25,8 @@ const AdminAnalytics = () => {
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [timeRange, setTimeRange] = useState("week"); // week, month, year
+  const [exportingPDF, setExportingPDF] = useState(false);
+  const analyticsRef = useRef(null);
 
   // Fetch incidents from API
   const fetchIncidents = async () => {
@@ -178,6 +183,191 @@ const AdminAnalytics = () => {
     URL.revokeObjectURL(url);
   };
 
+  const handlePDFExport = async () => {
+    if (!analyticsRef.current || exportingPDF) return;
+    
+    setExportingPDF(true);
+    try {
+      // Create PDF
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      
+      // Add title with color
+      pdf.setFontSize(24);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setTextColor(16, 185, 129); // Emerald color like the dashboard
+      pdf.text('SafeCity+ Analytics Report', pageWidth / 2, 25, { align: 'center' });
+      
+      // Add metadata
+      pdf.setFontSize(12);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setTextColor(100, 116, 139); // Slate color
+      pdf.text(`Generated: ${new Date().toLocaleString()}`, pageWidth / 2, 35, { align: 'center' });
+      pdf.text(`Time Range: ${timeRange.charAt(0).toUpperCase() + timeRange.slice(1)}`, pageWidth / 2, 42, { align: 'center' });
+      pdf.text(`Total Incidents: ${stats.total}`, pageWidth / 2, 49, { align: 'center' });
+      
+      // Add horizontal line
+      pdf.setDrawColor(226, 232, 240);
+      pdf.line(20, 55, pageWidth - 20, 55);
+      
+      // Capture the entire dashboard section by section
+      let yPosition = 65;
+      
+      // First capture the stats grid
+      const statsGrid = document.querySelector('.grid.grid-cols-1.sm\\:grid-cols-2.lg\\:grid-cols-5');
+      if (statsGrid) {
+        try {
+          const canvas = await html2canvas(statsGrid, {
+            scale: 0.8,
+            logging: false,
+            useCORS: true,
+            backgroundColor: '#f8fafc'
+          });
+          
+          const imgData = canvas.toDataURL('image/png');
+          const imgWidth = pageWidth - 40;
+          const imgHeight = (canvas.height * imgWidth) / canvas.width;
+          
+          if (yPosition + imgHeight > pageHeight - 30) {
+            pdf.addPage();
+            yPosition = 20;
+          }
+          
+          pdf.addImage(imgData, 'PNG', 20, yPosition, imgWidth, imgHeight);
+          yPosition += imgHeight + 15;
+        } catch (error) {
+          console.error('Error capturing stats grid:', error);
+        }
+      }
+      
+      // Capture charts in pairs for better layout
+      const chartContainers = document.querySelectorAll('.bg-white.rounded-2xl');
+      const chartPairs = [];
+      for (let i = 0; i < chartContainers.length; i += 2) {
+        chartPairs.push([chartContainers[i], chartContainers[i + 1]]);
+      }
+      
+      for (const pair of chartPairs) {
+        for (const chart of pair) {
+          if (!chart) continue;
+          
+          if (yPosition > pageHeight - 120) {
+            pdf.addPage();
+            yPosition = 20;
+          }
+          
+          try {
+            const canvas = await html2canvas(chart, {
+              scale: 0.7,
+              logging: false,
+              useCORS: true,
+              backgroundColor: '#ffffff'
+            });
+            
+            const imgData = canvas.toDataURL('image/png');
+            const imgWidth = (pageWidth - 60) / 2; // Two charts per row
+            const imgHeight = (canvas.height * imgWidth) / canvas.width;
+            
+            // Add chart title if visible
+            const titleElement = chart.querySelector('h2');
+            if (titleElement) {
+              pdf.setFontSize(12);
+              pdf.setFont('helvetica', 'bold');
+              pdf.setTextColor(15, 23, 42);
+              pdf.text(titleElement.textContent, 20, yPosition);
+              yPosition += 10;
+            }
+            
+            pdf.addImage(imgData, 'PNG', 20, yPosition, imgWidth, imgHeight);
+            yPosition += imgHeight + 20;
+            
+          } catch (error) {
+            console.error('Error capturing chart:', error);
+          }
+        }
+      }
+      
+      // Add summary section at the end
+      if (yPosition > pageHeight - 80) {
+        pdf.addPage();
+        yPosition = 20;
+      }
+      
+      // Add summary header
+      pdf.setFontSize(16);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setTextColor(16, 185, 129);
+      pdf.text('Summary Statistics', 20, yPosition);
+      yPosition += 15;
+      
+      // Add summary stats in columns
+      pdf.setFontSize(10);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setTextColor(71, 85, 105);
+      
+      const summaryData = [
+        ['Total Incidents', stats.total.toString(), '#ef4444'],
+        ['High Priority', stats.high.toString(), '#f97316'],
+        ['Medium Priority', stats.medium.toString(), '#f59e0b'],
+        ['Low Priority', stats.low.toString(), '#10b981'],
+        ['Pending', stats.pending.toString(), '#f59e0b'],
+        ['In Progress', stats.inProgress.toString(), '#3b82f6'],
+        ['Resolved', stats.resolved.toString(), '#10b981'],
+        ['Avg Confidence', `${Math.round(stats.avgConfidence * 100)}%`, '#8b5cf6']
+      ];
+      
+      // Create two-column layout
+      const colWidth = (pageWidth - 60) / 2;
+      let leftCol = yPosition;
+      let rightCol = yPosition;
+      
+      summaryData.forEach((item, index) => {
+        const isLeft = index % 2 === 0;
+        const yPos = isLeft ? leftCol : rightCol;
+        const xPos = isLeft ? 20 : 20 + colWidth + 20;
+        
+        // Add colored bullet
+        pdf.setFillColor(item[2]);
+        pdf.circle(xPos, yPos - 2, 2, 'F');
+        
+        // Add text
+        pdf.setTextColor(71, 85, 105);
+        pdf.text(`${item[0]}: ${item[1]}`, xPos + 6, yPos);
+        
+        if (isLeft) {
+          leftCol += 8;
+        } else {
+          rightCol += 8;
+        }
+      });
+      
+      // Add footer
+      const finalY = Math.max(leftCol, rightCol) + 20;
+      if (finalY > pageHeight - 30) {
+        pdf.addPage();
+        pdf.setFontSize(8);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setTextColor(148, 163, 184);
+        pdf.text('Generated by SafeCity+ Analytics Dashboard', pageWidth / 2, pageHeight - 20, { align: 'center' });
+      } else {
+        pdf.setFontSize(8);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setTextColor(148, 163, 184);
+        pdf.text('Generated by SafeCity+ Analytics Dashboard', pageWidth / 2, pageHeight - 20, { align: 'center' });
+      }
+      
+      // Save the PDF
+      pdf.save(`SafeCity_Analytics_${new Date().toISOString().split('T')[0]}.pdf`);
+      
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Failed to generate PDF. Please try again.');
+    } finally {
+      setExportingPDF(false);
+    }
+  };
+
   if (loading && incidents.length === 0) {
     return (
       <div className="flex h-screen bg-slate-50">
@@ -209,7 +399,7 @@ const AdminAnalytics = () => {
           user={user}
         />
         {/* Main Content */}
-        <main className="flex-1 p-6 md:p-8 overflow-auto">
+        <main ref={analyticsRef} className="flex-1 p-6 md:p-8 overflow-auto">
           {/* Stats Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
             <Stat title="Total Incidents" value={stats.total} icon={<Users size={24} />} color="zinc" />
@@ -219,8 +409,8 @@ const AdminAnalytics = () => {
             <Stat title="Avg Confidence" value={`${Math.round(stats.avgConfidence * 100)}%`} icon={<BarChart3 size={24} />} color="purple" />
           </div>
 
-          {/* Time Range Selector */}
-          <div className="flex justify-end mb-6">
+          {/* Time Range and Export Controls */}
+          <div className="flex justify-between items-center mb-6">
             <div className="bg-white border border-zinc-200 rounded-xl p-1 flex gap-1">
               <button
                 onClick={() => setTimeRange("week")}
@@ -245,6 +435,24 @@ const AdminAnalytics = () => {
                 }`}
               >
                 By Month
+              </button>
+            </div>
+            
+            <div className="flex gap-2">
+              <button
+                onClick={handlePDFExport}
+                disabled={exportingPDF}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white text-sm font-medium rounded-lg transition-all"
+              >
+                <FileText size={16} />
+                {exportingPDF ? 'Generating PDF...' : 'Export PDF'}
+              </button>
+              <button
+                onClick={handleExport}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-all"
+              >
+                <Download size={16} />
+                Export JSON
               </button>
             </div>
           </div>

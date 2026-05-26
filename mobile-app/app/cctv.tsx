@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Video, ResizeMode } from 'expo-av';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Location from 'expo-location';
 
 const { width, height } = Dimensions.get('window');
 const CARD_WIDTH = (width - 48) / 2;
@@ -94,6 +95,8 @@ export default function CCTVScreen() {
   const [liveStreams, setLiveStreams]  = useState<any[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [videoPlaying, setVideoPlaying] = useState(true);
+  const [currentLocation, setCurrentLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [locationName, setLocationName] = useState<string | null>(null);
   const videoRef = useRef<any>(null);
 
   const fadeAnim  = useRef(new Animated.Value(0)).current;
@@ -131,8 +134,228 @@ export default function CCTVScreen() {
     } catch { }
   };
 
+  // Get place name from coordinates using multiple geocoding services
+  const getPlaceName = async (latitude: number, longitude: number) => {
+    // Try multiple geocoding services in order of preference
+    const services = [
+      {
+        name: 'OpenStreetMap Nominatim Detailed',
+        url: `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&addressdetails=1&zoom=18`,
+        timeout: 12000 // 12 seconds
+      },
+      {
+        name: 'OpenStreetMap Nominatim Standard',
+        url: `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json&addressdetails=1`,
+        timeout: 10000 // 10 seconds
+      },
+      {
+        name: 'OpenStreetMap Search Nearby University',
+        url: `https://nominatim.openstreetmap.org/search?q=university&format=json&limit=3&addressdetails=1&viewbox=${longitude-0.005},${latitude+0.005},${longitude+0.005},${latitude-0.005}`,
+        timeout: 8000 // 8 seconds
+      }
+    ];
+
+    for (const service of services) {
+      try {
+        console.log(`Trying ${service.name}...`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), service.timeout);
+        
+        const response = await fetch(service.url, {
+          headers: {
+            'Accept-Language': 'en',
+            'User-Agent': 'SafeCityMobile/1.0'
+          },
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        // Handle both reverse geocoding and search results
+        let placeName = null;
+        
+        if (service.name.includes('Search Nearby')) {
+          // Handle search results (array of places)
+          if (Array.isArray(data) && data.length > 0) {
+            // Find the most relevant place (university, college, building, etc.)
+            const relevantPlace = data.find(place => {
+              const name = (place.display_name || '').toLowerCase();
+              const type = place.type || '';
+              const class_ = place.class || '';
+              return name.includes('university') || 
+                     name.includes('college') || 
+                     name.includes('institute') || 
+                     name.includes('computer') || 
+                     name.includes('science') || 
+                     name.includes('technology') ||
+                     name.includes('building') ||
+                     type === 'university' ||
+                     class_ === 'education' ||
+                     place.class === 'building';
+            }) || data[0]; // Fallback to first result
+            
+            if (relevantPlace) {
+              placeName = relevantPlace.display_name.split(',')[0].trim();
+            }
+          }
+        } else {
+          // Handle reverse geocoding results
+          if (data && data.display_name) {
+            const address = data.address || {};
+            
+            // Priority order for meaningful place names
+            if (data.name && data.name.trim() && 
+                !data.name.toLowerCase().includes('atm') &&
+                !data.name.toLowerCase().match(/^\d+/)) {
+              placeName = data.name.trim();
+            } else if (address.building) {
+              placeName = address.building;
+            } else if (address.university || address.college) {
+              placeName = address.university || address.college;
+            } else if (address.education) {
+              placeName = address.education;
+            } else if (address.amenity && 
+                      (address.amenity.includes('university') || 
+                       address.amenity.includes('college') ||
+                       address.amenity.includes('school') ||
+                       address.amenity.includes('institute'))) {
+              placeName = address.amenity;
+            } else if (address.shop && !address.shop.toLowerCase().includes('atm')) {
+              placeName = address.shop;
+            } else if (address.tourism) {
+              placeName = address.tourism;
+            } else if (data.class === 'education' || data.class === 'building') {
+              placeName = data.type || data.display_name.split(',')[0].trim();
+            } else if (address.road && (address.suburb || address.neighbourhood)) {
+              // Combine road and area for better context
+              const area = address.suburb || address.neighbourhood;
+              placeName = `${address.road}, ${area}`;
+            } else if (address.road) {
+              placeName = address.road;
+            } else if (address.neighbourhood || address.suburb) {
+              placeName = address.neighbourhood || address.suburb;
+            } else if (address.village) {
+              placeName = address.village;
+            } else if (address.city || address.town) {
+              placeName = address.city || address.town;
+            } else {
+              // Smart fallback - extract meaningful parts
+              const parts = data.display_name.split(',');
+              const meaningfulParts = parts.filter(part => {
+                const trimmed = part.trim();
+                return trimmed && 
+                       !trimmed.match(/^\d+$/) && // Skip postcodes
+                       !trimmed.match(/Ethiopia$/i) && // Skip country
+                       !trimmed.match(/\d{4}$/) && // Skip 4-digit codes
+                       !trimmed.toLowerCase().includes('atm') && // Skip ATMs
+                       !trimmed.match(/^A\d+$/); // Skip highway names like A3
+              });
+              placeName = meaningfulParts.slice(0, 2).join(', ').trim();
+            }
+          }
+        }
+        
+        if (placeName && placeName !== 'Unknown Location' && placeName.length > 0) {
+          console.log(`✅ Found place name: ${placeName}`);
+          return placeName;
+        }
+      } catch (error) {
+        console.error(`❌ ${service.name} failed:`, error.message);
+        if (error.name === 'AbortError') {
+          console.log(`⏰ ${service.name} timed out`);
+        }
+        // Continue to next service
+        continue;
+      }
+    }
+    
+    // If all services fail, create a meaningful fallback name
+    console.log('📍 All geocoding services failed, creating intelligent fallback');
+    
+    // Ethiopian coordinate ranges for common areas
+    const ethiopianLocations = {
+      'Addis Ababa Area': { latMin: 8.8, latMax: 9.2, lngMin: 38.6, lngMax: 38.9 },
+      'Bahir Dar Area': { latMin: 11.5, latMax: 11.7, lngMin: 37.3, lngMax: 37.5 },
+      'Gondar Area': { latMin: 12.5, latMax: 12.7, lngMin: 37.4, lngMax: 37.5 },
+      'Mekelle Area': { latMin: 13.4, latMax: 13.6, lngMin: 39.4, lngMax: 39.6 }
+    };
+    
+    let fallbackName = 'Unknown Location';
+    
+    // Check if coordinates match known Ethiopian areas
+    for (const [areaName, bounds] of Object.entries(ethiopianLocations)) {
+      if (latitude >= bounds.latMin && latitude <= bounds.latMax && 
+          longitude >= bounds.lngMin && longitude <= bounds.lngMax) {
+        fallbackName = areaName;
+        break;
+      }
+    }
+    
+    // If no specific area, create a generic but meaningful name
+    if (fallbackName === 'Unknown Location') {
+      // Use more readable coordinate format
+      fallbackName = `Location ${latitude.toFixed(4)}°N, ${longitude.toFixed(4)}°E`;
+    }
+    
+    console.log(`🎯 Using fallback location name: ${fallbackName}`);
+    return fallbackName;
+  };
+
+  // Get current location
+  const getCurrentLocation = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.log('Location permission denied');
+        return;
+      }
+
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+      });
+
+      const coords = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      };
+      
+      // Show coordinates immediately
+      setCurrentLocation(coords);
+      setLocationName(`${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`);
+      
+      // Get place name in background
+      getPlaceName(coords.latitude, coords.longitude).then(placeName => {
+        setLocationName(placeName);
+      }).catch(error => {
+        console.error('Background geocoding failed:', error);
+        // Keep showing coordinates if geocoding fails
+      });
+      
+    } catch (error) {
+      console.error('Error getting location:', error);
+      // Set default location (Addis Ababa)
+      const defaultCoords = { latitude: 9.03, longitude: 38.74 };
+      setCurrentLocation(defaultCoords);
+      setLocationName(`${defaultCoords.latitude.toFixed(4)}, ${defaultCoords.longitude.toFixed(4)}`);
+      
+      // Try geocoding default location in background
+      getPlaceName(defaultCoords.latitude, defaultCoords.longitude).then(placeName => {
+        setLocationName(placeName);
+      }).catch(() => {
+        // Keep coordinates if geocoding fails
+      });
+    }
+  };
+
   useEffect(() => {
-    fetchCameras(); fetchAlerts(); fetchLiveStreams();
+    fetchCameras(); fetchAlerts(); fetchLiveStreams(); getCurrentLocation();
     Animated.timing(fadeAnim, { toValue: 1, duration: 600, useNativeDriver: true }).start();
     const iv = setInterval(() => { fetchCameras(); fetchAlerts(); fetchLiveStreams(); }, 10000);
     return () => clearInterval(iv);
@@ -302,6 +525,30 @@ export default function CCTVScreen() {
           <View style={s.statDiv} />
           <StatPill icon="alert-circle-outline" label="Alerts" value={unreadAlerts} color="#f59e0b" />
         </View>
+
+        {/* ── Current Location Bar ───────────────────────────────────────── */}
+        {currentLocation && (
+          <View style={s.locationBar}>
+            <View style={s.locationContent}>
+              <Ionicons name="location-outline" size={16} color="#10b981" />
+              <View style={s.locationText}>
+                <Text style={s.locationLabel}>Your Location</Text>
+                <Text style={s.locationName}>
+                  {locationName || 'Getting location...'}
+                </Text>
+                <Text style={s.locationCoords}>
+                  {currentLocation.latitude.toFixed(6)}, {currentLocation.longitude.toFixed(6)}
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity 
+              style={s.locationRefreshBtn} 
+              onPress={getCurrentLocation}
+            >
+              <Ionicons name="refresh-outline" size={16} color="#64748b" />
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* ── Live Banner ───────────────────────────────────────────────── */}
         {activeLive > 0 && (
@@ -628,6 +875,26 @@ const s = StyleSheet.create({
   statPillValue: { fontSize: 15, fontWeight: '800', lineHeight: 18 },
   statPillLabel: { color: '#475569', fontSize: 9, fontWeight: '600', marginTop: 1 },
   statDiv: { width: 1, height: 24, backgroundColor: 'rgba(255,255,255,0.08)' },
+
+  // Location Bar
+  locationBar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginHorizontal: 16, marginBottom: 10,
+    backgroundColor: 'rgba(16, 185, 129, 0.1)', borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10,
+  },
+  locationContent: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  locationText: { flex: 1 },
+  locationLabel: { color: '#10b981', fontSize: 11, fontWeight: '700', marginBottom: 2 },
+  locationName: { 
+    color: '#fff', fontSize: 13, fontWeight: '600', marginBottom: 2,
+  },
+  locationCoords: { 
+    color: '#94a3b8', fontSize: 10, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  locationRefreshBtn: {
+    padding: 6, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)',
+  },
 
   // Live Banner
   liveBanner: { marginHorizontal: 16, marginBottom: 10, borderRadius: 14, overflow: 'hidden' },

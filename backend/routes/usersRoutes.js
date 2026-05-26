@@ -83,8 +83,21 @@ router.put('/:id', async (req, res) => {
         const { id } = req.params;
         const { fullName, email, phone, password, role, responder_type, status } = req.body;
         
+        // Get current user data to preserve required fields
+        const [currentUser] = await db.execute('SELECT full_name, role FROM users WHERE id = ?', [id]);
+        if (currentUser.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
         let query = 'UPDATE users SET full_name = ?, email = ?, phone = ?, role = ?, responder_type = ?, status = ?';
-        let params = [fullName, email || null, phone, role, responder_type || null, status || null];
+        let params = [
+            fullName || currentUser[0].full_name, // Keep existing full_name if new one is empty
+            email || null, 
+            phone || null, 
+            role || currentUser[0].role, // Keep existing role if new one is empty
+            responder_type || null, 
+            status || null
+        ];
         
         if (password) {
             const salt = await bcrypt.genSalt(10);

@@ -1,8 +1,12 @@
 // app/_layout.tsx
 import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
+import * as SplashScreen from 'expo-splash-screen';
 import { storage } from '../utils/storage';
 import AppLoader from '../components/AppLoader';
+
+// Keep native splash visible until we're ready
+SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const [isLoading, setIsLoading] = useState(true);
@@ -32,6 +36,8 @@ export default function RootLayout() {
       setInitialRoute('login');
     } finally {
       setIsLoading(false);
+      // Hide native splash — AppLoader takes over from here
+      await SplashScreen.hideAsync();
     }
   };
 

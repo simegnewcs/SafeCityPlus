@@ -9,6 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { notificationService, Notification } from '../../services/notificationService';
 
 const { width, height } = Dimensions.get('window');
 const API_URL = 'http://10.161.68.44:5000';
@@ -20,8 +21,10 @@ export default function HomeScreen() {
   const [stats, setStats] = useState({ total: 0, active: 0, resolved: 0 });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [notifications, setNotifications] = useState(3);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [showSOSModal, setShowSOSModal] = useState(false);
+  const [userId, setUserId] = useState<number | null>(null);
   
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -75,7 +78,22 @@ export default function HomeScreen() {
       duration: 1500,
       useNativeDriver: false,
     }).start();
+
+    // Subscribe to notifications
+    const unsubscribe = notificationService.subscribe((notifications) => {
+      setNotifications(notifications);
+      setUnreadCount(notificationService.getUnreadCount());
+    });
+
+    return () => unsubscribe();
   }, []);
+
+  // Fetch notifications when userId changes
+  useEffect(() => {
+    if (userId) {
+      notificationService.fetchNotifications(userId);
+    }
+  }, [userId]);
 
   const loadUserData = async () => {
     try {
@@ -84,6 +102,7 @@ export default function HomeScreen() {
         const user = JSON.parse(userData);
         setUserName(user.fullName?.split(' ')[0] || 'Citizen');
         setUserRole(user.role || 'User');
+        setUserId(user.id || null);
       }
     } catch (error) {
       console.error('Error loading user data:', error);
@@ -220,9 +239,11 @@ export default function HomeScreen() {
               onPress={() => router.push('/notifications')}
             >
               <Ionicons name="notifications-outline" size={26} color="#fff" />
-              {notifications > 0 && (
+              {unreadCount > 0 && (
                 <View style={styles.notificationDot}>
-                  <Text style={styles.notificationCount}>{notifications}</Text>
+                  <Text style={styles.notificationCount}>
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -267,21 +288,6 @@ export default function HomeScreen() {
                   <Ionicons name="chevron-forward" size={18} color="#3b82f6" />
                 </TouchableOpacity>
 
-                {/* Photo */}
-                <TouchableOpacity
-                  style={styles.sosOption}
-                  onPress={() => { setShowSOSModal(false); router.push('/camera?mode=photo'); }}
-                >
-                  <View style={[styles.sosOptionIcon, { backgroundColor: 'rgba(16,185,129,0.15)' }]}>
-                    <Ionicons name="camera" size={26} color="#10b981" />
-                  </View>
-                  <View style={styles.sosOptionText}>
-                    <Text style={styles.sosOptionTitle}>Photo</Text>
-                    <Text style={styles.sosOptionDesc}>Capture a photo of the incident</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#64748b" />
-                </TouchableOpacity>
-
                 {/* Video */}
                 <TouchableOpacity
                   style={styles.sosOption}
@@ -291,8 +297,8 @@ export default function HomeScreen() {
                     <Ionicons name="film" size={26} color="#ef4444" />
                   </View>
                   <View style={styles.sosOptionText}>
-                    <Text style={styles.sosOptionTitle}>Video</Text>
-                    <Text style={styles.sosOptionDesc}>Record a video of the incident</Text>
+                    <Text style={styles.sosOptionTitle}>Video/Photo</Text>
+                    <Text style={styles.sosOptionDesc}>Record a video or capture a photo of the incident</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#64748b" />
                 </TouchableOpacity>

@@ -7,7 +7,7 @@ const getBaseUrl = () => {
     const PORT = '5000';
     
     if (Platform.OS === 'android') {
-        return `http://${IP}:${PORT}/api`;
+        return `http://10.161.68.44:${PORT}/api`; // Use actual machine IP
     } else if (Platform.OS === 'ios') {
         return `http://${IP}:${PORT}/api`;
     } else {
@@ -18,6 +18,9 @@ const getBaseUrl = () => {
 const API_BASE_URL = getBaseUrl();
 
 console.log('📱 API Base URL:', API_BASE_URL);
+
+// Export API_BASE_URL for use in other components
+export { API_BASE_URL };
 
 // Create axios instance
 const api = axios.create({

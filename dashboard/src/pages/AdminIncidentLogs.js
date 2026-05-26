@@ -25,6 +25,7 @@ const AdminIncidentLogs = () => {
   const [itemsPerPage] = useState(10);
   const [selectedDetection, setSelectedDetection] = useState(null);
   const [showDetectionModal, setShowDetectionModal] = useState(false);
+  const [placeNames, setPlaceNames] = useState({});
   
   const videoRef = useRef(null);
 
@@ -33,7 +34,23 @@ const AdminIncidentLogs = () => {
     try {
       setLoading(true);
       const response = await axios.get(`${API_URL}/incidents`);
-      setIncidents(response.data);
+      const incidents = response.data;
+      
+      // Fetch place names for incidents with coordinates
+      const newPlaceNames = { ...placeNames };
+      const geocodingPromises = incidents.map(async (incident) => {
+        const key = `${incident.id}`;
+        if (incident.latitude && incident.longitude && !newPlaceNames[key]) {
+          const placeName = await getPlaceName(incident.latitude, incident.longitude);
+          newPlaceNames[key] = placeName;
+        }
+        return key;
+      });
+      
+      // Wait for all geocoding requests to complete
+      await Promise.all(geocodingPromises);
+      setPlaceNames(newPlaceNames);
+      setIncidents(incidents);
     } catch (error) {
       console.error("Error fetching incidents:", error);
     } finally {
@@ -111,7 +128,40 @@ const AdminIncidentLogs = () => {
     const latitude = parseFloat(lat);
     const longitude = parseFloat(lng);
     if (isNaN(latitude) || isNaN(longitude)) return "Unknown";
-    return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+    
+    // For now, return a more readable format
+    // TODO: Implement reverse geocoding to get actual place names
+    return `Lat: ${latitude.toFixed(4)}, Lng: ${longitude.toFixed(4)}`;
+  };
+
+  // Function to get place name from coordinates (using OpenStreetMap Nominatim)
+  const getPlaceName = async (lat, lng) => {
+    if (!lat || !lng) return "Unknown";
+    
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+        {
+          headers: {
+            'User-Agent': 'SafeCityPlus/1.0'
+          }
+        }
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.display_name) {
+          // Return a shorter, more readable address
+          const address = data.display_name.split(',');
+          return address.slice(0, 3).join(','); // Show first 3 parts of address
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching place name:', error);
+    }
+    
+    // Fallback to coordinates if geocoding fails
+    return formatLocation(lat, lng);
   };
 
   const getMediaUrl = (incident) => {
@@ -300,8 +350,8 @@ const AdminIncidentLogs = () => {
                               <option value="Resolved">Resolved</option>
                             </select>
                           </td>
-                          <td className="px-6 py-4 text-zinc-600 text-xs">
-                            {formatLocation(incident.latitude, incident.longitude)}
+                          <td className="px-6 py-4 text-zinc-600 text-xs max-w-xs">
+                            {placeNames[incident.id] || formatLocation(incident.latitude, incident.longitude)}
                           </td>
                           <td className="px-6 py-4 text-zinc-500 text-xs">
                             {formatDate(incident.created_at)}
@@ -426,7 +476,7 @@ const AdminIncidentLogs = () => {
                 <div className="bg-zinc-50 p-3 rounded-xl">
                   <p className="text-zinc-500 text-xs mb-1">Location</p>
                   <p className="font-medium text-zinc-900 text-sm">
-                    {formatLocation(selectedIncident.latitude, selectedIncident.longitude)}
+                    {placeNames[selectedIncident.id] || formatLocation(selectedIncident.latitude, selectedIncident.longitude)}
                   </p>
                 </div>
                 <div className="bg-zinc-50 p-3 rounded-xl">

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard, AlertTriangle, Video, Settings,
-  LogOut, ChevronLeft, ChevronRight
+  LogOut, ChevronLeft, ChevronRight, BarChart2
 } from "lucide-react";
 
 const SuperResponderSidebar = ({ user }) => {
@@ -17,6 +17,7 @@ const SuperResponderSidebar = ({ user }) => {
     { name: "Command Center", icon: <LayoutDashboard size={20} />, path: "/super-responder/dashboard" },
     { name: "Incident Queue", icon: <AlertTriangle size={20} />, path: "/super-responder/incidents" },
     { name: "CCTV Monitor", icon: <Video size={20} />, path: "/super-responder/cctv" },
+    { name: "Analytics", icon: <BarChart2 size={20} />, path: "/super-responder/analytics" },
     { name: "Settings", icon: <Settings size={20} />, path: "/super-responder/settings" },
   ];
 

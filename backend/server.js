@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { testEmailConfig } = require('./services/emailService');
 const axios = require('axios');
 const FormData = require('form-data');
 require('dotenv').config();
@@ -50,6 +51,8 @@ const authRoutes = require('./routes/authRoutes');
 const cctvRoutes = require('./routes/cctvRoutes');
 const usersRoutes = require('./routes/usersRoutes');
 const superResponderRoutes = require('./routes/superResponderRoutes');
+const emergencyContactsRoutes = require('./routes/emergencyContactsRoutes');
+const systemSettingsRoutes = require('./routes/systemSettingsRoutes');
 
 const app = express();
 const server = http.createServer(app);
@@ -62,12 +65,12 @@ const io = new Server(server, {
     cors: {
         origin: [
             "http://localhost:3000",
-            "http://10.161.68.44:3000", 
+            "http://192.168.43.86:3000", 
             "http://localhost:8081",
-            "http://10.161.68.44:8081",
+            "http://192.168.43.86:8081",
             "http://10.0.2.2:8081",
             "http://localhost:5000",
-            "http://10.161.68.44:5000",
+            "http://192.168.43.86:5000",
             "*"
         ],
         methods: ["GET", "POST"],
@@ -421,7 +424,7 @@ io.on('connection', async (socket) => {
 
             // ── Ethiopian-specific risk object categories ─────────────────
             const ROAD_VEHICLES   = ['car','truck','bus','motorcycle','bicycle'];
-            const FIRE_LABELS     = ['fire','smoke'];
+            const FIRE_LABELS     = ['fire','smoke','fire_color_detected','candle','flame'];
             const CROWD_LABELS    = ['crowd'];
             const CONSTRUCTION    = ['crane','hard hat','helmet'];
             const WEAPONS         = ['knife','gun','scissors'];
@@ -430,9 +433,14 @@ io.on('connection', async (socket) => {
                                      ...CONSTRUCTION, ...WEAPONS, ...MEDICAL, 'person'];
 
             // Count how many frames each label appeared in
+            // Check both d.label (friendly name) and d.raw_label (technical name)
             const objectCounts = {};
             for (const f of frameHistory) {
-                const seenInFrame = new Set(f.detections.map(d => d.raw_label?.toLowerCase()));
+                const seenInFrame = new Set();
+                for (const d of f.detections) {
+                    const label = d.label?.toLowerCase() || d.raw_label?.toLowerCase();
+                    if (label) seenInFrame.add(label);
+                }
                 for (const label of seenInFrame) {
                     if (ALL_HIGH_RISK.includes(label)) {
                         objectCounts[label] = (objectCounts[label] || 0) + 1;
@@ -448,13 +456,31 @@ io.on('connection', async (socket) => {
             const latestDetections = frameHistory[frameHistory.length - 1]?.detections || [];
             const highConfDetections = latestDetections.filter(d => d.confidence > 0.55);
 
-            // Situation flags
-            const hasFire       = latestDetections.some(d => FIRE_LABELS.includes(d.raw_label?.toLowerCase()));
-            const hasWeapon     = latestDetections.some(d => WEAPONS.includes(d.raw_label?.toLowerCase()));
-            const hasBlood      = latestDetections.some(d => d.raw_label?.toLowerCase() === 'blood');
-            const hasCrowd      = latestDetections.some(d => CROWD_LABELS.includes(d.raw_label?.toLowerCase()));
-            const hasCrane      = latestDetections.some(d => d.raw_label?.toLowerCase() === 'crane');
-            const hasAmbulance  = latestDetections.some(d => d.raw_label?.toLowerCase() === 'ambulance');
+            // Situation flags - check both label and raw_label fields
+            const hasFire       = latestDetections.some(d => 
+                FIRE_LABELS.includes(d.label?.toLowerCase()) || 
+                FIRE_LABELS.includes(d.raw_label?.toLowerCase())
+            );
+            const hasWeapon     = latestDetections.some(d => 
+                WEAPONS.includes(d.label?.toLowerCase()) || 
+                WEAPONS.includes(d.raw_label?.toLowerCase())
+            );
+            const hasBlood      = latestDetections.some(d => 
+                (d.label?.toLowerCase() === 'blood') || 
+                (d.raw_label?.toLowerCase() === 'blood')
+            );
+            const hasCrowd      = latestDetections.some(d => 
+                CROWD_LABELS.includes(d.label?.toLowerCase()) || 
+                CROWD_LABELS.includes(d.raw_label?.toLowerCase())
+            );
+            const hasCrane      = latestDetections.some(d => 
+                (d.label?.toLowerCase() === 'crane') || 
+                (d.raw_label?.toLowerCase() === 'crane')
+            );
+            const hasAmbulance  = latestDetections.some(d => 
+                (d.label?.toLowerCase() === 'ambulance') || 
+                (d.raw_label?.toLowerCase() === 'ambulance')
+            );
 
             // Vehicle/person interaction
             const vehiclesPresent = ROAD_VEHICLES.filter(v => objectCounts[v]);
@@ -494,8 +520,12 @@ io.on('connection', async (socket) => {
             } else if (hasWeapon) {
                 // 🔫 Security / Weapon
                 incidentCategory = 'Security';
-                const w = latestDetections.find(d => WEAPONS.includes(d.raw_label?.toLowerCase()));
-                decision       = `Weapon Detected — ${w?.raw_label || 'Unknown'}`;
+                const w = latestDetections.find(d => 
+                    WEAPONS.includes(d.label?.toLowerCase()) || 
+                    WEAPONS.includes(d.raw_label?.toLowerCase())
+                );
+                const weaponName = w?.label || w?.raw_label || 'Unknown';
+                decision       = `Weapon Detected — ${weaponName}`;
                 severity       = '🔴 Critical Emergency';
                 responseAction = 'Dispatch Armed Police immediately';
 
@@ -564,7 +594,8 @@ io.on('connection', async (socket) => {
 
             } else if (outOfCommon.length > 0 && highConfDetections.length > 0) {
                 // 🔵 Out of common Ethiopian incidents
-                const labels = [...new Set(outOfCommon.map(d => d.raw_label))].join(', ');
+                // Use friendly label if available, fall back to raw_label
+                const labels = [...new Set(outOfCommon.map(d => d.label || d.raw_label))].join(', ');
                 incidentCategory = 'Unknown';
                 decision         = `Out of Common Incidents — ${labels}`;
                 severity         = '🟢 Low Risk';
@@ -584,9 +615,10 @@ io.on('connection', async (socket) => {
             }
 
             // Build tracked object list with direction/speed estimates
+            // Use d.label (friendly name) if available, fall back to d.raw_label or d.type
             const trackedObjects = latestDetections.slice(0, 10).map((d, idx) => ({
                 id: `T${String(idx + 1).padStart(2, '0')}`,
-                label: d.raw_label || 'object',
+                label: d.label || d.raw_label || d.type || 'object',
                 confidence: Math.round((d.confidence || 0) * 100),
                 severity: d.severity || 'Low',
                 direction: ['N','NE','E','SE','S','SW','W','NW'][idx % 8],
@@ -595,8 +627,9 @@ io.on('connection', async (socket) => {
             }));
 
             // Build normalised bounding-box array for mobile overlay
+            // Use d.label (friendly name like 'candle', 'flame', 'fire') if available
             const bboxDetections = latestDetections.map(d => ({
-                label:      (d.raw_label || d.type || 'object').toLowerCase(),
+                label:      (d.label || d.raw_label || d.type || 'object').toLowerCase(),
                 confidence: d.confidence || 0,
                 x: d.bbox?.x ?? 0,
                 y: d.bbox?.y ?? 0,
@@ -816,9 +849,9 @@ app.set('socketio', io);
 app.use(cors({
     origin: [
         "http://localhost:3000",
-        "http://10.161.68.44:3000",
+        "http://192.168.43.86:3000",
         "http://localhost:8081",
-        "http://10.161.68.44:8081",
+        "http://192.168.43.86:8081",
         "http://10.0.2.2:8081",
         "*"
     ],
@@ -831,6 +864,13 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Serve static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Public routes (no authentication required)
+app.use('/api/emergency-contacts', emergencyContactsRoutes);
+app.use('/api/auth', authRoutes);
+
+// Notifications routes
+const { router: notificationsRoutes } = require('./routes/notificationsRoutes');
+
 // Apply authentication middleware globally
 app.use(authMiddleware);
 
@@ -840,12 +880,13 @@ app.use((req, res, next) => {
     next();
 });
 
-// Routes
+// Protected routes (authentication required)
 app.use('/api/incidents', incidentRoutes);
-app.use('/api/auth', authRoutes);
 app.use('/api/cctv', cctvRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/super-responder', superResponderRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/system-settings', systemSettingsRoutes);
 
 // AI Event Log endpoint
 app.get('/api/ai/events', (req, res) => {
@@ -1005,6 +1046,107 @@ async function runMigrations() {
             INSERT IGNORE INTO system_settings (\`key\`, \`value\`) VALUES ('ai_auto_assign', 'true')
         `);
 
+        // emergency_contacts table for admin-managed emergency numbers
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS emergency_contacts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(200) NOT NULL,
+                number VARCHAR(50) NOT NULL UNIQUE,
+                alternative VARCHAR(50),
+                icon VARCHAR(100) DEFAULT 'call',
+                color VARCHAR(20) DEFAULT '#E63939',
+                description TEXT,
+                priority INT DEFAULT 999,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_priority (priority)
+            )
+        `);
+
+        // Seed default emergency contacts if table is empty
+        const [contactCount] = await db.execute('SELECT COUNT(*) as count FROM emergency_contacts');
+        if (contactCount[0].count === 0) {
+            await db.execute(`
+                INSERT INTO emergency_contacts (name, number, alternative, icon, color, description, priority) VALUES
+                ('Police', '911', '991', 'shield-checkmark', '#3b82f6', 'Law enforcement and public safety', 1),
+                ('Ambulance', '907', '991', 'medkit', '#ef4444', 'Medical emergencies and ambulance services', 2),
+                ('Fire Brigade', '912', '991', 'flame', '#f59e0b', 'Fire incidents and rescue operations', 3),
+                ('Traffic Police', '945', '991', 'car', '#10b981', 'Car accidents, traffic issues', 4),
+                ('Electricity Emergency', '980', '991', 'flash', '#8b5cf6', 'Power outages, electrical hazards', 5)
+            `);
+        }
+
+        // password_reset_tokens table for automated password reset
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                token VARCHAR(255) NOT NULL UNIQUE,
+                expires_at DATETIME NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                used BOOLEAN DEFAULT FALSE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_token (token),
+                INDEX idx_user_id (user_id),
+                INDEX idx_expires_at (expires_at)
+            )
+        `);
+        
+        // Clean up expired tokens
+        await db.execute('DELETE FROM password_reset_tokens WHERE expires_at < NOW() OR used = TRUE');
+        console.log('✅ Password reset tokens table ready');
+
+        // Create system_settings table
+        await db.execute(`
+            CREATE TABLE IF NOT EXISTS system_settings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                setting_key VARCHAR(100) NOT NULL UNIQUE,
+                setting_value TEXT,
+                setting_type ENUM('string', 'number', 'boolean', 'json') DEFAULT 'string',
+                category VARCHAR(50) DEFAULT 'general',
+                description TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_category (category),
+                INDEX idx_key (setting_key)
+            )
+        `);
+        console.log('✅ System settings table ready');
+
+        // Insert default system settings
+        const defaultSettings = [
+            ['dark_mode', 'false', 'boolean', 'system', 'Enable dark mode theme'],
+            ['auto_refresh', 'true', 'boolean', 'system', 'Automatically refresh dashboard data'],
+            ['refresh_interval', '30', 'number', 'system', 'Data refresh interval in seconds'],
+            ['language', 'en', 'string', 'system', 'Default system language'],
+            ['data_retention', '90', 'number', 'system', 'Data retention period in days'],
+            ['email_alerts', 'true', 'boolean', 'notifications', 'Enable email notifications'],
+            ['sms_alerts', 'false', 'boolean', 'notifications', 'Enable SMS notifications'],
+            ['critical_only', 'false', 'boolean', 'notifications', 'Only send critical incident alerts'],
+            ['backup_schedule', 'daily', 'string', 'notifications', 'Automated backup schedule'],
+            ['two_factor_auth', 'false', 'boolean', 'security', 'Enable two-factor authentication'],
+            ['session_timeout', '60', 'number', 'security', 'Session timeout in minutes'],
+            ['api_rate_limit', '100', 'number', 'api', 'API rate limit per minute'],
+            ['api_timeout', '30', 'number', 'api', 'API request timeout in seconds'],
+            ['max_file_size', '10', 'number', 'api', 'Maximum file upload size in MB'],
+            ['cvt_quality', 'medium', 'string', 'cctv', 'CCTV video quality setting'],
+            ['cvt_retention', '7', 'number', 'cctv', 'CCTV footage retention days'],
+            ['cvt_detection_sensitivity', '0.7', 'number', 'cctv', 'AI detection sensitivity threshold'],
+            ['emergency_contacts', '[]', 'json', 'emergency', 'Emergency contact list'],
+            ['auto_dispatch', 'true', 'boolean', 'emergency', 'Auto-dispatch emergency services'],
+            ['dispatch_radius', '5', 'number', 'emergency', 'Dispatch radius in kilometers']
+        ];
+
+        for (const [key, value, type, category, description] of defaultSettings) {
+            await db.execute(`
+                INSERT IGNORE INTO system_settings (setting_key, setting_value, setting_type, category, description)
+                VALUES (?, ?, ?, ?, ?)
+            `, [key, value, type, category, description]);
+        }
+        console.log('✅ Default system settings inserted');
+
+        // notifications table will be created separately
+
         console.log('✅ DB migrations complete');
     } catch (err) {
         console.error('⚠️  Migration warning (non-fatal):', err.message);
@@ -1013,8 +1155,17 @@ async function runMigrations() {
 
 // Start server
 const PORT = process.env.PORT || 5000;
-runMigrations().then(() => {
-    server.listen(PORT, () => {
+runMigrations().then(async () => {
+    // Test email configuration
+    const emailReady = await testEmailConfig();
+    if (!emailReady) {
+        console.log('⚠️  Email service not configured - password reset emails will not be sent');
+        console.log('💡 To enable emails, set EMAIL_USER and EMAIL_PASS in your .env file');
+    } else {
+        console.log('✅ Email service ready - password reset emails will be sent');
+    }
+
+    server.listen(PORT, '0.0.0.0', () => {
         console.log(`
     ════════════════════════════════════════════════════════
     🚀 SafeCity+ Backend Server

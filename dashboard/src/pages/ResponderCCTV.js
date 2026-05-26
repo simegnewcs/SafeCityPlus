@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import ResponderSidebar from "../layout/ResponderSidebar";
 import SuperResponderSidebar from "../layout/SuperResponderSidebar";
 import {
@@ -42,11 +42,7 @@ const ConfidenceBar = ({ value }) => {
 
 const StreamLocationMap = ({ locationStr }) => {
   const [incidentCoords, setIncidentCoords] = React.useState(null);
-  const [userCoords,     setUserCoords]     = React.useState(null);
   const [address,        setAddress]        = React.useState(null);
-  const [route,          setRoute]          = React.useState(null);
-  const [routeError,     setRouteError]     = React.useState(null);
-  const [loadingRoute,   setLoadingRoute]   = React.useState(false);
   const [iframeSrc,      setIframeSrc]      = React.useState(null);
   const blobUrlRef = React.useRef(null);
 
@@ -67,39 +63,11 @@ const StreamLocationMap = ({ locationStr }) => {
       .catch(() => setAddress(locationStr));
   }, [locationStr]);
 
-  React.useEffect(() => {
-    if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(
-      pos => setUserCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-      () => setUserCoords(null)
-    );
-  }, []);
-
-  React.useEffect(() => {
-    if (!incidentCoords || !userCoords) return;
-    setLoadingRoute(true); setRouteError(null);
-    const { lat: iLat, lng: iLng } = incidentCoords;
-    const { lat: uLat, lng: uLng } = userCoords;
-    fetch(`https://router.project-osrm.org/route/v1/driving/${uLng},${uLat};${iLng},${iLat}?overview=full&geometries=geojson`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.code !== 'Ok' || !data.routes?.length) throw new Error('No route found');
-        const r0 = data.routes[0];
-        setRoute({ distance: r0.distance, duration: r0.duration, geometry: r0.geometry });
-        setLoadingRoute(false);
-      })
-      .catch(e => { setRouteError(e.message); setLoadingRoute(false); });
-  }, [incidentCoords, userCoords]);
-
+  
+  
   React.useEffect(() => {
     if (!incidentCoords) return;
     const { lat: iLat, lng: iLng } = incidentCoords;
-    const uLat = userCoords?.lat, uLng = userCoords?.lng;
-    const hasRoute = route && uLat != null;
-    const cLat = hasRoute ? (iLat + uLat) / 2 : iLat;
-    const cLng = hasRoute ? (iLng + uLng) / 2 : iLng;
-    const zoom  = hasRoute ? 13 : 16;
-    const routeCoords = hasRoute ? JSON.stringify(route.geometry.coordinates.map(([ln, la]) => [la, ln])) : '[]';
 
     const html = `<!DOCTYPE html><html><head>
 <meta charset="utf-8"/>
@@ -108,12 +76,10 @@ const StreamLocationMap = ({ locationStr }) => {
 <style>html,body,#map{margin:0;padding:0;width:100%;height:100%;background:#0f172a}</style>
 </head><body><div id="map"></div>
 <script>
-  var map = L.map('map',{zoomControl:true,attributionControl:false}).setView([${cLat},${cLng}],${zoom});
+  var map = L.map('map',{zoomControl:true,attributionControl:false}).setView([${iLat},${iLng}],18);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-  var redIcon = L.divIcon({className:'',html:'<div style="width:14px;height:14px;background:#ef4444;border:2px solid #fff;border-radius:50%;box-shadow:0 0 8px #ef4444"></div>',iconAnchor:[7,7]});
-  L.marker([${iLat},${iLng}],{icon:redIcon}).addTo(map).bindPopup('<b>📍 Incident Location</b>').openPopup();
-  ${uLat != null ? `var blueIcon = L.divIcon({className:'',html:'<div style="width:12px;height:12px;background:#60a5fa;border:2px solid #fff;border-radius:50%;box-shadow:0 0 6px #60a5fa"></div>',iconAnchor:[6,6]});L.marker([${uLat},${uLng}],{icon:blueIcon}).addTo(map).bindPopup('<b>🚓 Your Location</b>');` : ''}
-  ${hasRoute ? `var coords=${routeCoords};L.polyline(coords,{color:'#f59e0b',weight:4,opacity:0.9,dashArray:'8,4'}).addTo(map);map.fitBounds(L.polyline(coords).getBounds(),{padding:[20,20]});` : ''}
+  var redIcon = L.divIcon({className:'',html:'<div style="width:16px;height:16px;background:#ef4444;border:3px solid #fff;border-radius:50%;box-shadow:0 0 12px #ef4444"></div>',iconAnchor:[8,8]});
+  L.marker([${iLat},${iLng}],{icon:redIcon}).addTo(map).bindPopup('<b>📍 Incident Location</b><br><small>GPS: ${iLat.toFixed(6)}, ${iLng.toFixed(6)}</small>').openPopup();
 <\/script></body></html>`;
 
     if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
@@ -121,7 +87,7 @@ const StreamLocationMap = ({ locationStr }) => {
     const url  = URL.createObjectURL(blob);
     blobUrlRef.current = url;
     setIframeSrc(url);
-  }, [incidentCoords, userCoords, route]);
+  }, [incidentCoords]);
 
   React.useEffect(() => () => { if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current); }, []);
 
@@ -136,14 +102,12 @@ const StreamLocationMap = ({ locationStr }) => {
 
   const { lat: iLat, lng: iLng } = incidentCoords;
   const osmLink = `https://www.openstreetmap.org/?mlat=${iLat}&mlon=${iLng}#map=16/${iLat}/${iLng}`;
-  const fmtDist = (m) => m >= 1000 ? `${(m/1000).toFixed(1)} km` : `${Math.round(m)} m`;
-  const fmtTime = (s) => { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60); return h > 0 ? `${h}h ${m}m` : `${m} min`; };
-
+  
   return (
     <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
       <div className="px-3 py-2 border-b border-slate-700 flex items-center gap-1.5">
         <MapPin size={11} className="text-emerald-400" />
-        <span className="text-[10px] font-bold text-slate-300">Incident Location & Route</span>
+        <span className="text-[10px] font-bold text-slate-300">Incident Location</span>
         <a href={osmLink} target="_blank" rel="noreferrer" className="ml-auto text-[9px] text-indigo-400 hover:text-indigo-300">Open ↗</a>
       </div>
       {iframeSrc && <iframe title="stream-location" src={iframeSrc} width="100%" height="200" style={{ border: 0, display: 'block' }} sandbox="allow-scripts allow-same-origin" />}
@@ -152,32 +116,8 @@ const StreamLocationMap = ({ locationStr }) => {
           <span className="text-[9px] font-mono text-emerald-400">{iLat.toFixed(5)}, {iLng.toFixed(5)}</span>
           {address && <p className="text-[10px] text-slate-300 leading-tight mt-0.5">{address}</p>}
         </div>
-        {loadingRoute && <div className="flex items-center gap-1.5 text-[10px] text-slate-500"><div className="w-3 h-3 border border-yellow-500 border-t-transparent rounded-full animate-spin" />Calculating route...</div>}
-        {!loadingRoute && !userCoords && <p className="text-[10px] text-slate-500">Enable browser location to see route</p>}
-        {route && !loadingRoute && (
-          <div className="grid grid-cols-2 gap-2">
-            <div className="bg-slate-700/60 rounded-lg px-2.5 py-2 border border-slate-600/50">
-              <div className="flex items-center gap-1 mb-0.5"><span className="text-yellow-400 text-[10px]">🚗</span><span className="text-[9px] text-slate-400 uppercase font-bold">Distance</span></div>
-              <p className="text-sm font-bold text-white">{fmtDist(route.distance)}</p>
-            </div>
-            <div className="bg-slate-700/60 rounded-lg px-2.5 py-2 border border-slate-600/50">
-              <div className="flex items-center gap-1 mb-0.5"><span className="text-yellow-400 text-[10px]">⏱</span><span className="text-[9px] text-slate-400 uppercase font-bold">Drive Time</span></div>
-              <p className="text-sm font-bold text-white">{fmtTime(route.duration)}</p>
-            </div>
-          </div>
-        )}
-        {route && !loadingRoute && (
-          <div className="flex items-center gap-1.5 bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-2.5 py-1.5">
-            <span className="text-yellow-400 text-xs">⚡</span>
-            <span className="text-[10px] text-yellow-300 font-semibold">Fastest route by car</span>
-            <span className="ml-auto text-[9px] text-yellow-400 font-mono">{fmtDist(route.distance)} · {fmtTime(route.duration)}</span>
-          </div>
-        )}
-        {routeError && <p className="text-[10px] text-red-400">Route unavailable: {routeError}</p>}
         <div className="flex items-center gap-3 text-[9px] text-slate-500">
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Incident</span>
-          {userCoords && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400 inline-block" /> Your Position</span>}
-          {route && <span className="flex items-center gap-1"><span className="inline-block w-4 border-t-2 border-dashed border-yellow-400" /> Route</span>}
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500 inline-block" /> Incident Location</span>
         </div>
       </div>
     </div>
@@ -521,8 +461,73 @@ const ResponderCCTV = () => {
     const blob = new Blob([JSON.stringify(aiEventTimeline, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url;
-    a.download = `ai-events-${Date.now()}.json`; a.click();
+    a.download = `ai-events-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    addAlert('AI events exported successfully');
+  };
+
+  const saveVideoClip = async () => {
+    if (!selectedStream || !streamFrames[selectedStream.streamId]) {
+      addAlert('No video frame available to save');
+      return;
+    }
+
+    try {
+      // Get the current frame from the stream
+      const currentFrame = streamFrames[selectedStream.streamId];
+      
+      // Create a canvas to capture the current video frame
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      
+      img.onload = () => {
+        // Set canvas dimensions to match the video
+        canvas.width = img.naturalWidth || 640;
+        canvas.height = img.naturalHeight || 360;
+        
+        // Draw the current frame
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        // Add timestamp and stream info overlay
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, canvas.height - 60, canvas.width, 60);
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px Arial';
+        ctx.fillText(`Camera: ${selectedStream.cameraName || 'Unknown'}`, 10, canvas.height - 35);
+        
+        ctx.font = '12px Arial';
+        ctx.fillText(`Stream ID: ${selectedStream.streamId}`, 10, canvas.height - 20);
+        ctx.fillText(`Location: ${selectedStream.location || 'Unknown'}`, 10, canvas.height - 5);
+        
+        ctx.font = '10px Arial';
+        ctx.fillText(`Time: ${new Date().toLocaleString()}`, canvas.width - 200, canvas.height - 5);
+        
+        // Convert canvas to blob and download
+        canvas.toBlob((blob) => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `cctv-clip-${selectedStream.cameraName || 'unknown'}-${Date.now()}.jpg`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          
+          addAlert(`Video clip saved: ${selectedStream.cameraName || 'Unknown Camera'}`);
+        }, 'image/jpeg', 0.9);
+      };
+      
+      img.src = `data:image/jpeg;base64,${currentFrame}`;
+      
+    } catch (error) {
+      console.error('Error saving video clip:', error);
+      addAlert('Failed to save video clip');
+    }
   };
 
   const getStatusColor = (status) => {
@@ -601,6 +606,7 @@ const ResponderCCTV = () => {
                 <span className="text-xs font-medium text-red-600">{activeLiveStreams} Live</span>
               </div>
             )}
+            
             <div className="relative">
               <button onClick={() => setShowAlerts(!showAlerts)} className="relative p-2 hover:bg-zinc-100 rounded-xl transition-all">
                 <AlertTriangle className="w-5 h-5 text-amber-500" />
@@ -944,7 +950,7 @@ const ResponderCCTV = () => {
                       ? '🚨 Assign Responders'
                       : 'Assign Responders'}
                 </button>
-                <button className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors flex items-center justify-center gap-1.5">
+                <button onClick={saveVideoClip} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors flex items-center justify-center gap-1.5">
                   <Download size={13} /> Save Clip
                 </button>
                 <button onClick={closeStreamModal} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors">Close</button>
