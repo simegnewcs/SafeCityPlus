@@ -1,6 +1,6 @@
 // src/pages/ResponderAnalytics.js
 import React, { useState, useEffect, useMemo } from "react";
-import SuperResponderSidebar from "../layout/SuperResponderSidebar";
+import ResponderSidebar from "../layout/ResponderSidebar";
 import {
   TrendingUp, AlertTriangle, Clock, Activity, RefreshCw,
   BarChart3, CheckCircle, Cpu, MapPin, Video, Users,
@@ -185,7 +185,7 @@ const ResponderAnalytics = () => {
 
   if (loading) return (
     <div className="flex h-screen bg-slate-950 text-white">
-      <SuperResponderSidebar user={user} />
+      <ResponderSidebar user={user} />
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
           <div className="w-10 h-10 border-4 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
@@ -214,7 +214,7 @@ const ResponderAnalytics = () => {
 
   return (
     <div className="flex h-screen bg-slate-950 text-white overflow-hidden">
-      <SuperResponderSidebar user={user} />
+      <ResponderSidebar user={user} />
       <div className="flex-1 flex flex-col overflow-hidden">
 
         {/* Header */}
