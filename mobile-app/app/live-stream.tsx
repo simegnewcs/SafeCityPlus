@@ -131,8 +131,14 @@ export default function LiveStreamScreen() {
   const connectionAttempts = useRef(0);
   const streamIdRef = useRef<string | null>(null);
   const isStreamingRef = useRef(false);
+  const connectionStatusRef = useRef<'connecting' | 'connected' | 'disconnected'>('connecting');
   
   const router = useRouter();
+
+  const autoStartDoneRef = useRef(false);
+
+  // Keep connectionStatusRef in sync with state
+  useEffect(() => { connectionStatusRef.current = connectionStatus; }, [connectionStatus]);
 
   useEffect(() => {
     getLocation();
@@ -142,7 +148,7 @@ export default function LiveStreamScreen() {
     
     return () => {
       subscription.remove();
-      if (isStreaming) stopStreaming();
+      if (isStreamingRef.current) stopStreaming();
       if (socketRef.current) socketRef.current.disconnect();
       if (durationTimer.current) clearInterval(durationTimer.current);
       if (frameInterval.current) clearInterval(frameInterval.current);
@@ -220,21 +226,28 @@ export default function LiveStreamScreen() {
       
       socket.on('connect', () => {
         console.log('✅ Socket.IO connected to:', url);
+        connectionStatusRef.current = 'connected';
         setConnectionStatus('connected');
         connectionAttempts.current = 0;
         
-        if (isStreaming && streamId) {
+        if (isStreamingRef.current && streamIdRef.current) {
           restartStream();
+        } else if (!autoStartDoneRef.current) {
+          // Auto-start stream immediately on first connection
+          autoStartDoneRef.current = true;
+          startStreamingDirect();
         }
       });
       
       socket.on('connect_error', (error) => {
         console.error('❌ Socket.IO connection error:', error.message);
+        connectionStatusRef.current = 'disconnected';
         setConnectionStatus('disconnected');
       });
       
       socket.on('disconnect', (reason) => {
         console.log('🔌 Socket.IO disconnected:', reason);
+        connectionStatusRef.current = 'disconnected';
         setConnectionStatus('disconnected');
       });
       
@@ -380,6 +393,22 @@ export default function LiveStreamScreen() {
     }
   };
 
+  // Internal version used by auto-start — bypasses state check, uses ref directly
+  const startStreamingDirect = async () => {
+    if (!permission?.granted) {
+      const perm = await requestPermission();
+      if (!perm.granted) {
+        Alert.alert('Permission Required', 'Camera access is needed for streaming');
+        return;
+      }
+    }
+    if (!socketRef.current?.connected) {
+      Alert.alert('Not Connected', 'Unable to reach server.');
+      return;
+    }
+    await _doStartStream();
+  };
+
   const startStreaming = async () => {
     if (!permission?.granted) {
       const perm = await requestPermission();
@@ -389,10 +418,14 @@ export default function LiveStreamScreen() {
       }
     }
     
-    if (connectionStatus !== 'connected') {
+    if (connectionStatusRef.current !== 'connected') {
       Alert.alert('Not Connected', 'Please wait for connection to server.');
       return;
     }
+    await _doStartStream();
+  };
+
+  const _doStartStream = async () => {
     
     setIsLoading(true);
     
@@ -486,13 +519,6 @@ export default function LiveStreamScreen() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  if (connectionStatus === 'connecting' && !isStreaming) {
-    return (
-      <AppLoader message="Connecting to server..." />
-    );
-  }
-
-
   if (!permission?.granted) {
     return (
       <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
@@ -501,61 +527,6 @@ export default function LiveStreamScreen() {
           <Text style={styles.permissionText}>Camera permission required</Text>
           <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
             <Text style={styles.permissionButtonText}>Grant Permission</Text>
-          </TouchableOpacity>
-        </View>
-      </LinearGradient>
-    );
-  }
-
-  if (!isStreaming) {
-    return (
-      <LinearGradient colors={['#0f172a', '#1e293b']} style={styles.container}>
-        <View style={styles.startContainer}>
-          <View style={styles.connectionStatus}>
-            <View style={[styles.connectionDot, connectionStatus === 'connected' ? styles.connectedDot : styles.disconnectedDot]} />
-            <Text style={styles.connectionText}>
-              {connectionStatus === 'connected' ? 'Connected to server' : 'Disconnected from server'}
-            </Text>
-          </View>
-          
-          <View style={styles.streamPreview}>
-            <View style={styles.previewIcon}>
-              <Ionicons name="videocam" size={80} color="#E63939" />
-            </View>
-            <Text style={styles.previewTitle}>Live Stream</Text>
-            <Text style={styles.previewText}>
-              Start a live stream to share real-time video with admin
-            </Text>
-            {location && (
-              <View style={styles.locationInfo}>
-                <Ionicons name="location" size={16} color="#94a3b8" />
-                <Text style={styles.locationText}>
-                  {location.coords.latitude.toFixed(4)}, {location.coords.longitude.toFixed(4)}
-                </Text>
-              </View>
-            )}
-          </View>
-          
-          <TouchableOpacity 
-            style={[styles.startButton, connectionStatus !== 'connected' && styles.disabledButton]} 
-            onPress={startStreaming}
-            disabled={isLoading || connectionStatus !== 'connected'}
-          >
-            <LinearGradient 
-              colors={connectionStatus === 'connected' ? ['#E63939', '#b91c1c'] : ['#6c6c6c', '#5a5a5a']} 
-              style={styles.startGradient}
-            >
-              {isLoading ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <>
-                  <Ionicons name="radio" size={24} color="#fff" />
-                  <Text style={styles.startButtonText}>
-                    {connectionStatus === 'connected' ? 'Start Live Stream' : 'Waiting for connection'}
-                  </Text>
-                </>
-              )}
-            </LinearGradient>
           </TouchableOpacity>
         </View>
       </LinearGradient>
@@ -574,6 +545,31 @@ export default function LiveStreamScreen() {
           setCameraLayout({ w, h });
         }}
       >
+        {/* ── Connecting / starting overlay ───────────────────── */}
+        {!isStreaming && (
+          <View style={styles.connectingOverlay}>
+            <View style={styles.connectingCard}>
+              <ActivityIndicator color="#E63939" size="large" />
+              <Text style={styles.connectingOverlayText}>
+                {connectionStatus === 'connecting'
+                  ? 'Connecting to server…'
+                  : isLoading
+                    ? 'Starting stream…'
+                    : 'Starting stream…'}
+              </Text>
+              <View style={styles.connectingDotRow}>
+                <View style={[styles.connectingDot, connectionStatus === 'connected' && styles.connectingDotOn]} />
+                <Text style={styles.connectingDotLabel}>
+                  {connectionStatus === 'connected' ? 'Connected' : 'Connecting…'}
+                </Text>
+              </View>
+            </View>
+            <TouchableOpacity style={styles.connectingBackBtn} onPress={() => router.back()}>
+              <Ionicons name="arrow-back" size={16} color="#94a3b8" />
+              <Text style={styles.connectingBackText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        )}
         {/* ── AI bounding box overlay ─────────────────────────── */}
         {aiEnabled && (
           <View style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -718,6 +714,26 @@ const styles = StyleSheet.create({
   camera: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
   startContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
+
+  connectingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.78)',
+    justifyContent: 'center', alignItems: 'center', gap: 20, zIndex: 99,
+  },
+  connectingCard: {
+    backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 20, paddingHorizontal: 32, paddingVertical: 28, alignItems: 'center', gap: 12, minWidth: 220,
+  },
+  connectingOverlayText: { color: '#e2e8f0', fontSize: 15, fontWeight: '600' },
+  connectingDotRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  connectingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ef4444' },
+  connectingDotOn: { backgroundColor: '#10b981' },
+  connectingDotLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '600' },
+  connectingBackBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.08)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20,
+  },
+  connectingBackText: { color: '#94a3b8', fontSize: 13, fontWeight: '600' },
 
   // ── Pre-stream screens ────────────────────────────────────────────────────
   connectionStatus: {

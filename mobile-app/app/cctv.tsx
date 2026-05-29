@@ -11,10 +11,24 @@ import { Video, ResizeMode } from 'expo-av';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 
 const { width, height } = Dimensions.get('window');
 const CARD_WIDTH = (width - 48) / 2;
 const API_URL = 'http://10.161.68.44:5000';
+
+const darkMapStyle = [
+  { elementType: 'geometry', stylers: [{ color: '#0f172a' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#64748b' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#0f172a' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#1e293b' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#0f172a' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#334155' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0c1626' }] },
+  { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#162032' }] },
+  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#0f2818' }] },
+  { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#162032' }] },
+];
 
 interface Camera {
   id: number;
@@ -248,7 +262,7 @@ export default function CCTVScreen() {
             } else {
               // Smart fallback - extract meaningful parts
               const parts = data.display_name.split(',');
-              const meaningfulParts = parts.filter(part => {
+              const meaningfulParts = parts.filter((part: string) => {
                 const trimmed = part.trim();
                 return trimmed && 
                        !trimmed.match(/^\d+$/) && // Skip postcodes
@@ -267,8 +281,9 @@ export default function CCTVScreen() {
           return placeName;
         }
       } catch (error) {
-        console.error(`❌ ${service.name} failed:`, error.message);
-        if (error.name === 'AbortError') {
+        const err = error as Error;
+        console.error(`❌ ${service.name} failed:`, err.message);
+        if (err.name === 'AbortError') {
           console.log(`⏰ ${service.name} timed out`);
         }
         // Continue to next service
@@ -491,26 +506,9 @@ export default function CCTVScreen() {
               <Text style={s.headerSub}>{cameras.length} cameras registered</Text>
             </View>
           </View>
-          <View style={s.headerRight}>
-            {/* Alerts bell */}
-            <TouchableOpacity style={s.iconBtn} onPress={() => setShowAlerts(v => !v)}>
-              <Ionicons name="notifications-outline" size={22} color={unreadAlerts > 0 ? '#E63939' : '#94a3b8'} />
-              {unreadAlerts > 0 && (
-                <View style={s.badge}><Text style={s.badgeText}>{unreadAlerts}</Text></View>
-              )}
-            </TouchableOpacity>
-            {/* View toggle */}
-            <TouchableOpacity style={s.iconBtn} onPress={() => setViewMode(v => v === 'grid' ? 'list' : 'grid')}>
-              <Ionicons name={viewMode === 'grid' ? 'list-outline' : 'grid-outline'} size={22} color="#94a3b8" />
-            </TouchableOpacity>
-            {/* Start live */}
-            <TouchableOpacity style={s.liveBtn} onPress={() => router.push('/live-stream')}>
-              <LinearGradient colors={['#E63939', '#b91c1c']} style={s.liveBtnGrad}>
-                <PulsingDot color="#fff" size={6} />
-                <Text style={s.liveBtnText}>Go Live</Text>
-              </LinearGradient>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity style={s.iconBtn} onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={22} color="#94a3b8" />
+          </TouchableOpacity>
         </View>
 
         {/* ── Stats Bar ─────────────────────────────────────────────────── */}
@@ -549,6 +547,54 @@ export default function CCTVScreen() {
             </TouchableOpacity>
           </View>
         )}
+
+        {/* ── Go Live Card ──────────────────────────────────────────────── */}
+        <TouchableOpacity style={s.goLiveCard} activeOpacity={0.88} onPress={() => router.push('/live-stream')}>
+          <LinearGradient
+            colors={['#1a0a0a', '#2d0f0f', '#1a0a0a']}
+            start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+            style={s.goLiveGrad}
+          >
+            {/* Left: icon + label */}
+            <View style={s.goLiveLeft}>
+              <View style={s.goLiveIconWrap}>
+                <LinearGradient colors={['#E63939', '#b91c1c']} style={s.goLiveIconGrad}>
+                  <Ionicons name="radio" size={26} color="#fff" />
+                </LinearGradient>
+                <View style={s.goLivePulseRing} />
+              </View>
+              <View style={s.goLiveInfo}>
+                <Text style={s.goLiveTitle}>Go Live</Text>
+                <Text style={s.goLiveSub}>Stream your camera to the command center</Text>
+                <View style={s.goLiveMetaRow}>
+                  {activeLive > 0 ? (
+                    <View style={s.goLiveMetaChip}>
+                      <PulsingDot color="#E63939" size={5} />
+                      <Text style={s.goLiveMetaText}>{activeLive} stream{activeLive > 1 ? 's' : ''} live now</Text>
+                    </View>
+                  ) : (
+                    <View style={[s.goLiveMetaChip, s.goLiveMetaChipIdle]}>
+                      <View style={s.goLiveMetaDot} />
+                      <Text style={[s.goLiveMetaText, { color: '#64748b' }]}>No active streams</Text>
+                    </View>
+                  )}
+                  {currentLocation && (
+                    <View style={s.goLiveMetaChip}>
+                      <Ionicons name="location-outline" size={10} color="#10b981" />
+                      <Text style={[s.goLiveMetaText, { color: '#10b981' }]}>
+                        {locationName ? locationName.split(',')[0] : 'Location ready'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            </View>
+            {/* Right: chevron */}
+            <View style={s.goLiveChevron}>
+              <Ionicons name="chevron-forward" size={20} color="#E63939" />
+            </View>
+          </LinearGradient>
+        </TouchableOpacity>
 
         {/* ── Live Banner ───────────────────────────────────────────────── */}
         {activeLive > 0 && (
@@ -618,11 +664,73 @@ export default function CCTVScreen() {
         >
           {filteredCameras.length === 0 ? (
             <View style={s.emptyBox}>
-              <Ionicons name="videocam-off-outline" size={56} color="#334155" />
-              <Text style={s.emptyTitle}>No cameras found</Text>
-              <Text style={s.emptySub}>
-                {filterTab === 'live' ? 'No live streams right now' : 'Try a different filter'}
-              </Text>
+              {currentLocation ? (
+                <View style={s.locationMapCard}>
+                  <View style={s.locationMapHeader}>
+                    <View style={s.locationMapHeaderLeft}>
+                      <View style={s.locationMapIconWrap}>
+                        <Ionicons name="location" size={14} color="#10b981" />
+                      </View>
+                      <View>
+                        <Text style={s.locationMapTitle}>Your Location</Text>
+                        <Text style={s.locationMapSub} numberOfLines={1}>
+                          {locationName || `${currentLocation.latitude.toFixed(4)}, ${currentLocation.longitude.toFixed(4)}`}
+                        </Text>
+                      </View>
+                    </View>
+                    <TouchableOpacity style={s.locationMapRefresh} onPress={getCurrentLocation}>
+                      <Ionicons name="refresh-outline" size={14} color="#64748b" />
+                    </TouchableOpacity>
+                  </View>
+                  <MapView
+                    style={s.locationMap}
+                    provider={PROVIDER_GOOGLE}
+                    initialRegion={{
+                      latitude: currentLocation.latitude,
+                      longitude: currentLocation.longitude,
+                      latitudeDelta: 0.008,
+                      longitudeDelta: 0.008,
+                    }}
+                    mapType="standard"
+                    showsUserLocation={true}
+                    showsMyLocationButton={false}
+                    showsCompass={false}
+                    scrollEnabled={true}
+                    zoomEnabled={true}
+                    customMapStyle={darkMapStyle}
+                  >
+                    <Marker
+                      coordinate={{ latitude: currentLocation.latitude, longitude: currentLocation.longitude }}
+                      title="You are here"
+                      description={locationName || ''}
+                    >
+                      <View style={s.markerWrap}>
+                        <LinearGradient colors={['#E63939', '#b91c1c']} style={s.markerDot}>
+                          <Ionicons name="person" size={12} color="#fff" />
+                        </LinearGradient>
+                        <View style={s.markerTail} />
+                      </View>
+                    </Marker>
+                  </MapView>
+                  <View style={s.locationMapFooter}>
+                    <Text style={s.locationMapCoords}>
+                      {currentLocation.latitude.toFixed(6)}°N · {currentLocation.longitude.toFixed(6)}°E
+                    </Text>
+                    <View style={s.locationMapStatus}>
+                      <View style={s.locationMapStatusDot} />
+                      <Text style={s.locationMapStatusText}>GPS Active</Text>
+                    </View>
+                  </View>
+                </View>
+              ) : (
+                <View style={s.emptyInner}>
+                  <Ionicons name="videocam-off-outline" size={56} color="#334155" />
+                  <Text style={s.emptyTitle}>No cameras found</Text>
+                  <Text style={s.emptySub}>
+                    {filterTab === 'live' ? 'No live streams right now' : 'Try a different filter'}
+                  </Text>
+                </View>
+              )}
             </View>
           ) : viewMode === 'grid' ? (
             <View style={s.gridWrap}>
@@ -864,6 +972,42 @@ const s = StyleSheet.create({
   liveBtnGrad: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, gap: 5 },
   liveBtnText: { color: '#fff', fontSize: 12, fontWeight: '800' },
 
+  // Go Live Card
+  goLiveCard: {
+    marginHorizontal: 16, marginBottom: 12, borderRadius: 18,
+    overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(230,57,57,0.3)',
+  },
+  goLiveGrad: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 16, gap: 14 },
+  goLiveLeft: { flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 },
+  goLiveIconWrap: { position: 'relative', width: 56, height: 56, justifyContent: 'center', alignItems: 'center' },
+  goLiveIconGrad: {
+    width: 52, height: 52, borderRadius: 16,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  goLivePulseRing: {
+    position: 'absolute', width: 56, height: 56, borderRadius: 18,
+    borderWidth: 1.5, borderColor: 'rgba(230,57,57,0.4)',
+  },
+  goLiveInfo: { flex: 1, gap: 3 },
+  goLiveTitle: { color: '#fff', fontSize: 18, fontWeight: '800', letterSpacing: 0.3 },
+  goLiveSub: { color: '#94a3b8', fontSize: 11, fontWeight: '500', lineHeight: 15 },
+  goLiveMetaRow: { flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' },
+  goLiveMetaChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(230,57,57,0.12)', paddingHorizontal: 7, paddingVertical: 3,
+    borderRadius: 20, borderWidth: 1, borderColor: 'rgba(230,57,57,0.25)',
+  },
+  goLiveMetaChipIdle: {
+    backgroundColor: 'rgba(255,255,255,0.04)', borderColor: 'rgba(255,255,255,0.08)',
+  },
+  goLiveMetaDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: '#475569' },
+  goLiveMetaText: { color: '#E63939', fontSize: 9, fontWeight: '700' },
+  goLiveChevron: {
+    width: 32, height: 32, borderRadius: 10,
+    backgroundColor: 'rgba(230,57,57,0.12)', justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: 'rgba(230,57,57,0.25)',
+  },
+
   // Stats
   statsBar: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around',
@@ -990,9 +1134,53 @@ const s = StyleSheet.create({
   listStatusText: { fontSize: 9, fontWeight: '800' },
 
   // Empty
-  emptyBox: { alignItems: 'center', paddingVertical: 60, gap: 8 },
+  emptyBox: { width: '100%' },
+  emptyInner: { alignItems: 'center', paddingVertical: 60, gap: 8 },
   emptyTitle: { color: '#475569', fontSize: 15, fontWeight: '700', marginTop: 8 },
   emptySub: { color: '#334155', fontSize: 12 },
+
+  // Location Map Card
+  locationMapCard: {
+    borderRadius: 18, overflow: 'hidden',
+    borderWidth: 1, borderColor: 'rgba(16,185,129,0.25)',
+    backgroundColor: '#0f1a16',
+  },
+  locationMapHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 14, paddingVertical: 12,
+  },
+  locationMapHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  locationMapIconWrap: {
+    width: 28, height: 28, borderRadius: 8,
+    backgroundColor: 'rgba(16,185,129,0.15)', justifyContent: 'center', alignItems: 'center',
+  },
+  locationMapTitle: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  locationMapSub: { color: '#64748b', fontSize: 10, marginTop: 1, maxWidth: width - 120 },
+  locationMapRefresh: {
+    padding: 6, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  locationMap: { width: '100%', height: 220 },
+  locationMapFooter: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 14, paddingVertical: 10,
+    backgroundColor: 'rgba(0,0,0,0.3)',
+  },
+  locationMapCoords: {
+    color: '#64748b', fontSize: 10,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  locationMapStatus: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  locationMapStatusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#10b981' },
+  locationMapStatusText: { color: '#10b981', fontSize: 10, fontWeight: '700' },
+  markerWrap: { alignItems: 'center' },
+  markerDot: {
+    width: 28, height: 28, borderRadius: 14,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: '#fff',
+  },
+  markerTail: {
+    width: 2, height: 6, backgroundColor: '#E63939', marginTop: -1,
+  },
 
   // Modal
   modalHeader: {

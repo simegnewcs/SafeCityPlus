@@ -41,7 +41,7 @@ exports.login = async (req, res) => {
         }
 
         // Only allow email login (phone login disabled)
-        const [users] = await db.execute('SELECT * FROM users WHERE email = ?', [email]);
+        const [users] = await db.execute('SELECT *, IFNULL(password_changed, 1) AS password_changed FROM users WHERE email = ?', [email]);
 
         if (users.length === 0) {
             return res.status(401).json({ success: false, message: "Invalid email or password." });
@@ -67,7 +67,8 @@ exports.login = async (req, res) => {
                 email: user.email,
                 phone: user.phone,
                 role: user.role,
-                responder_type: user.responder_type || null
+                responder_type: user.responder_type || null,
+                password_changed: user.password_changed === 1 || user.password_changed === true
             }
         });
 

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import AdminSidebar from "../layout/AdminSidebar";
 import PageHeader from "../layout/PageHeader";
+import ConfusionMatrix from "../components/ConfusionMatrix";
 import { 
   TrendingUp, AlertTriangle, Clock, Users, 
   Calendar, MapPin, Activity, RefreshCw, Download,
@@ -636,6 +637,11 @@ const AdminAnalytics = () => {
                 style={{ width: `${Math.min(100, (resolutionData.avg / 72) * 100)}%` }}
               />
             </div>
+          </div>
+
+          {/* AI Performance Metrics - Confusion Matrix */}
+          <div className="mb-6">
+            <ConfusionMatrix />
           </div>
         </main>
       </div>

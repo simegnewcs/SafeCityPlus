@@ -5,7 +5,7 @@ import MapView from "../components/MapView";
 import {
   Menu, X, Bell, RefreshCw, Download,
   AlertTriangle, TrendingUp, Clock, CheckCircle,
-  Activity, Shield, Zap, BarChart2
+  Activity, Shield, Zap, BarChart2, Video as VideoIcon
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
@@ -57,6 +57,9 @@ const AdminDashboard = () => {
   const [now, setNow] = useState(new Date());
   const user = JSON.parse(localStorage.getItem("user") || "{}");
 
+  // CCTV incidents state
+  const [cctvIncidents, setCctvIncidents] = useState([]);
+
   useEffect(() => {
     const tick = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(tick);
@@ -65,8 +68,54 @@ const AdminDashboard = () => {
   const fetchIncidents = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(`${API_URL}/incidents`);
-      setIncidents(response.data);
+      // 1. Fetch regular reporter incidents
+      const regularResponse = await axios.get(`${API_URL}/incidents`);
+      const regularIncidents = regularResponse.data.map(inc => ({
+        ...inc,
+        incidentSource: 'reporter'
+      }));
+
+      // 2. Fetch CCTV/AI incidents from super-responder endpoint
+      let aiIncidents = [];
+      try {
+        const aiResponse = await axios.get(`${API_URL}/super-responder/incidents?limit=200`);
+        const raw = aiResponse.data || [];
+        aiIncidents = raw.map(aiInc => ({
+          ...aiInc,
+          _rawId: aiInc.id,
+          id: `AI-${aiInc.id}`,
+          type: aiInc.incident_category || aiInc.decision || 'AI Detected Incident',
+          status: aiInc.status || 'pending',
+          priority: aiInc.severity === 'Critical Emergency' ? 'Critical' : 
+                   (aiInc.severity === 'Medium Risk' ? 'Medium' : 'Low'),
+          description: aiInc.decision,
+          incidentSource: 'cctv',
+          reporter_name: 'AI Detection System',
+          created_at: aiInc.created_at,
+          assigned_at: aiInc.assigned_at,
+          assigned_by: (aiInc.assigned_by === 'ai' || aiInc.assigned_by === 'auto')
+            ? '🤖 AI System'
+            : (aiInc.assigned_by_name || 'Super Responder'),
+          latitude: aiInc.latitude,
+          longitude: aiInc.longitude,
+          location: aiInc.location,
+          confidence: aiInc.ai_confidence ? aiInc.ai_confidence / 100 : 
+                     (aiInc.accident_confidence ? aiInc.accident_confidence / 100 : 0),
+          assigned_responder_type: aiInc.assigned_to_types,
+          ai_metadata: aiInc.ai_metadata,
+          priority_score: aiInc.priority_score,
+          incident_category: aiInc.incident_category,
+          stream_id: aiInc.stream_id,
+          recording_id: aiInc.recording_id
+        }));
+        setCctvIncidents(aiIncidents);
+      } catch (aiError) {
+        console.warn('Failed to fetch CCTV incidents:', aiError.message);
+      }
+
+      // 3. Merge both lists (CCTV first if high priority)
+      const merged = [...aiIncidents, ...regularIncidents];
+      setIncidents(merged);
       setLastUpdated(new Date());
     } catch (error) {
       console.error("Error fetching incidents:", error);
@@ -86,11 +135,12 @@ const AdminDashboard = () => {
     const high = incidents.filter((i) => i.priority === "High" || i.priority === "Critical").length;
     const medium = incidents.filter((i) => i.priority === "Medium").length;
     const low = incidents.filter((i) => i.priority === "Low" || i.priority === "Normal").length;
-    const pending = incidents.filter((i) => i.status === "Pending").length;
+    const pending = incidents.filter((i) => i.status === "Pending" || !i.status).length;
     const resolved = incidents.filter((i) => i.status === "Resolved").length;
     const inProgress = incidents.filter((i) => i.status === "In Progress").length;
     const resolutionRate = total > 0 ? Math.round((resolved / total) * 100) : 0;
-    return { total, high, medium, low, pending, resolved, inProgress, resolutionRate };
+    const cctv = incidents.filter((i) => i.incidentSource === 'cctv').length;
+    return { total, high, medium, low, pending, resolved, inProgress, resolutionRate, cctv };
   }, [incidents]);
 
   const priorityData = useMemo(() => [
@@ -107,7 +157,7 @@ const AdminDashboard = () => {
 
   const typeData = useMemo(() => {
     const typeCount = incidents.reduce((acc, inc) => {
-      const type = inc.type || "Unknown";
+      const type = inc.incident_category || inc.type || "Unknown";
       acc[type] = (acc[type] || 0) + 1;
       return acc;
     }, {});
@@ -253,11 +303,15 @@ const AdminDashboard = () => {
           ) : (
             <>
               {/* ── KPI Stats Row ── */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-4">
                 <StatCard title="Total Incidents" value={stats.total}
                   icon={<Shield size={18} />}
                   gradient="bg-gradient-to-br from-indigo-500 to-indigo-600"
                   sub="All time" />
+                <StatCard title="CCTV AI" value={stats.cctv || 0}
+                  icon={<VideoIcon size={18} />}
+                  gradient="bg-gradient-to-br from-rose-500 to-red-600"
+                  sub="AI detected" />
                 <StatCard title="Pending" value={stats.pending}
                   icon={<Clock size={18} />}
                   gradient="bg-gradient-to-br from-amber-400 to-orange-500"
@@ -431,7 +485,7 @@ const AdminDashboard = () => {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="bg-slate-50 border-b border-slate-100">
-                          {["#", "Type", "Priority", "Status", "Location", "Reported"].map(h => (
+                          {["# / Source", "Type / Category", "Priority", "Status", "Location", "Reported"].map(h => (
                             <th key={h} className="px-5 py-3.5 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
                           ))}
                         </tr>
@@ -440,8 +494,24 @@ const AdminDashboard = () => {
                         {recentIncidents.map((inc, idx) => (
                           <tr key={inc.id}
                             className={`border-b border-slate-50 hover:bg-indigo-50/40 transition-colors cursor-default ${idx % 2 === 0 ? "" : "bg-slate-50/40"}`}>
-                            <td className="px-5 py-3.5 font-mono text-xs text-slate-400 font-medium">#{inc.id}</td>
-                            <td className="px-5 py-3.5 font-semibold text-slate-800 text-sm">{inc.type || "Unknown"}</td>
+                            <td className="px-5 py-3.5 font-mono text-xs text-slate-400 font-medium">
+                              <div className="flex items-center gap-2">
+                                #{String(inc.id).replace('AI-', '')}
+                                {inc.incidentSource === 'cctv' && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold bg-red-100 text-red-700 rounded">
+                                    <VideoIcon size={10} /> CCTV
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-5 py-3.5">
+                              <div className="flex flex-col">
+                                <span className="font-semibold text-slate-800 text-sm">{inc.type || "Unknown"}</span>
+                                {inc.incident_category && (
+                                  <span className="text-[10px] text-slate-500">{inc.incident_category}</span>
+                                )}
+                              </div>
+                            </td>
                             <td className="px-5 py-3.5">
                               <span className={`inline-flex items-center px-2.5 py-0.5 text-[11px] font-bold rounded-lg ${priorityBadge(inc.priority)}`}>
                                 {inc.priority || "Normal"}
@@ -454,9 +524,9 @@ const AdminDashboard = () => {
                               </span>
                             </td>
                             <td className="px-5 py-3.5 text-slate-500 text-xs font-mono">
-                              {inc.latitude && inc.longitude
+                              {inc.location || (inc.latitude && inc.longitude
                                 ? `${parseFloat(inc.latitude).toFixed(4)}, ${parseFloat(inc.longitude).toFixed(4)}`
-                                : <span className="text-slate-300">—</span>}
+                                : <span className="text-slate-300">—</span>)}
                             </td>
                             <td className="px-5 py-3.5 text-slate-400 text-xs">{formatDate(inc.created_at)}</td>
                           </tr>

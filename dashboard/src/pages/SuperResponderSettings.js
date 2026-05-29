@@ -43,6 +43,7 @@ export default function SuperResponderSettings() {
   // Profile
   const [fullName, setFullName] = useState(user.fullName || "");
   const [phone, setPhone] = useState(user.phone || "");
+  const [oldPassword, setOldPassword] = useState("");
   const [password, setPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
@@ -89,15 +90,25 @@ export default function SuperResponderSettings() {
   const saveProfile = async () => {
     setSaving(true);
     try {
-      const body = { fullName, phone };
-      if (password) body.password = password;
+      const body = { 
+        fullName, 
+        phone,
+        // Add requester info for backend to identify self-update
+        requesterRole: user.role,
+        requesterId: user.id,
+      };
+      if (password) {
+        body.password = password;
+        body.oldPassword = oldPassword;
+      }
       await axios.put(`${API_URL}/users/${user.id}`, body);
       const updated = { ...user, fullName, phone };
       localStorage.setItem("user", JSON.stringify(updated));
+      setOldPassword("");
       setPassword("");
       showMsg("Profile saved successfully", "success");
-    } catch {
-      showMsg("Failed to save profile", "error");
+    } catch (err) {
+      showMsg(err.response?.data?.message || "Failed to save profile", "error");
     } finally { setSaving(false); }
   };
 
@@ -214,12 +225,22 @@ export default function SuperResponderSettings() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5">New Password <span className="text-slate-600 font-normal">(leave blank to keep current)</span></label>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">Old Password</label>
+                <input
+                  type="password"
+                  value={oldPassword}
+                  onChange={e => setOldPassword(e.target.value)}
+                  placeholder="Enter current password"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-slate-500 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">New Password</label>
                 <input
                   type="password"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
-                  placeholder="••••••••"
+                  placeholder="Enter new password"
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-slate-500 transition-colors"
                 />
               </div>

@@ -4,261 +4,255 @@ import ResponderSidebar from "../layout/ResponderSidebar";
 import MapView from "../components/MapView";
 import axios from "axios";
 import io from "socket.io-client";
-import { 
-  Shield, MapPin, Clock, CheckCircle, AlertTriangle, 
+import {
+  Shield, MapPin, Clock, CheckCircle, AlertTriangle,
   RefreshCw, Navigation, Phone, Eye, Activity,
-  X, Calendar, Users, Bell, TrendingUp, BellRing
+  X, Users, BellRing, Video, Wifi, WifiOff, Zap,
+  Cpu, ChevronRight, Target, Flame, Radio
 } from "lucide-react";
 
 const API_URL = "http://localhost:5000/api";
 const SOCKET_URL = "http://localhost:5000";
 
-const ResponderDashboard = () => {
+const RESPONDER_EMOJI = {
+  "Fire Brigade": "🔥", "Armed Police": "🚔", "Ambulance": "🚑",
+  "Construction Safety": "🏗️", "Traffic Police": "🚦", "Crowd Control": "👥",
+  "Emergency Patrol": "🛡️", "Site Inspector": "🔍", "General Responder": "⚠️",
+};
+
+const SEV_CLS = {
+  "Critical Emergency": "bg-red-500/15 border-red-500/40 text-red-300",
+  "High Risk":          "bg-orange-500/15 border-orange-500/40 text-orange-300",
+  "Medium Risk":        "bg-yellow-500/15 border-yellow-500/40 text-yellow-300",
+  "Low Risk":           "bg-emerald-500/15 border-emerald-500/40 text-emerald-300",
+};
+
+const fmtTime = (ts) => {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) +
+    " · " + d.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+
+const parseTypes = (raw) => {
+  if (Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw || "[]"); } catch { return []; }
+};
+
+export default function ResponderDashboard() {
   const user = JSON.parse(localStorage.getItem("user") || "{}");
-  const [incidents, setIncidents] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState(new Date());
-  const [selectedIncident, setSelectedIncident] = useState(null);
-  const [showModal, setShowModal] = useState(false);
-  const [updatingStatus, setUpdatingStatus] = useState(false);
-  const [notification, setNotification] = useState({ show: false, message: "", type: "" });
-  const [assignAlert, setAssignAlert] = useState(null);
   const socketRef = useRef(null);
 
-  // Fetch incidents assigned to this responder
-  const fetchIncidents = async () => {
+  const [myIncidents, setMyIncidents]       = useState([]);
+  const [aiIncidents, setAiIncidents]       = useState([]);
+  const [emergencyContacts, setContacts]    = useState([]);
+  const [cameraStats, setCameraStats]       = useState({ total: 0, active: 0, alerts: 0 });
+  const [loading, setLoading]               = useState(true);
+  const [lastUpdated, setLastUpdated]       = useState(new Date());
+  const [isConnected, setIsConnected]       = useState(false);
+  const [assignAlert, setAssignAlert]       = useState(null);
+  const [selectedInc, setSelectedInc]       = useState(null);
+  const [filterStatus, setFilterStatus]     = useState("all");
+  const [toast, setToast]                   = useState(null);
+  const [updatingId, setUpdatingId]         = useState(null);
+
+  const showToast = (msg, type = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  /* ── fetch all ── */
+  const fetchAll = async () => {
     try {
-      setLoading(true);
-      // Get all incidents assigned to this responder
-      const response = await axios.get(`${API_URL}/incidents`);
-      const allIncidents = response.data;
-      // Filter incidents assigned to this responder
-      const assignedIncidents = allIncidents.filter(i => 
-        i.assigned_responder_id === user.id || 
-        (i.user_id === user.id && user.role === "Responder")
-      );
-      setIncidents(assignedIncidents);
+      let u = JSON.parse(localStorage.getItem("user") || "{}");
+      if (!u.responder_type && u.id) {
+        try {
+          const pr = await axios.get(`${API_URL}/users/${u.id}`);
+          if (pr.data?.responder_type) {
+            u = { ...u, responder_type: pr.data.responder_type };
+            localStorage.setItem("user", JSON.stringify(u));
+          }
+        } catch {}
+      }
+
+      const rtype = u.responder_type || u.responderType || "";
+
+      const [aiRes, contactsRes, statsRes] = await Promise.allSettled([
+        rtype
+          ? axios.get(`${API_URL}/super-responder/my-incidents?responderType=${encodeURIComponent(rtype)}&limit=100`)
+          : Promise.resolve({ data: { incidents: [] } }),
+        axios.get(`${API_URL}/emergency-contacts`),
+        axios.get(`${API_URL}/cctv/stats`),
+      ]);
+
+      if (aiRes.status === "fulfilled") {
+        setAiIncidents(aiRes.value.data?.incidents || []);
+      }
+      if (contactsRes.status === "fulfilled") {
+        const raw = contactsRes.value.data;
+        setContacts(Array.isArray(raw) ? raw : raw.contacts || []);
+      }
+      if (statsRes.status === "fulfilled") {
+        const s = statsRes.value.data;
+        setCameraStats({
+          total:  s.total_cameras ?? s.total ?? 0,
+          active: s.active_cameras ?? s.active ?? 0,
+          alerts: s.total_alerts  ?? s.alerts ?? 0,
+        });
+      }
+
       setLastUpdated(new Date());
-    } catch (error) {
-      console.error("Error fetching incidents:", error);
-      showNotification("Failed to load incidents", "error");
+    } catch (e) {
+      console.error("Dashboard fetch error:", e);
     } finally {
       setLoading(false);
     }
   };
 
+  /* ── socket ── */
   useEffect(() => {
-    fetchIncidents();
-    const interval = setInterval(fetchIncidents, 30000);
+    fetchAll();
+    const iv = setInterval(fetchAll, 30000);
 
-    // Socket — listen for incident-assigned events
     const socket = io(SOCKET_URL, { transports: ["websocket", "polling"] });
     socketRef.current = socket;
+    socket.on("connect",    () => setIsConnected(true));
+    socket.on("disconnect", () => setIsConnected(false));
 
-    socket.on("incident-assigned", (incident) => {
-      // Support both camelCase (normalized) and snake_case (raw DB) payloads
-      const raw = incident.assignedTypes ?? incident.assigned_to_types ?? "[]";
-      let types = [];
-      try { types = Array.isArray(raw) ? raw : JSON.parse(raw); } catch {}
-
-      const myType = user.responder_type || "";
-      // Show alert if: responder has no type set, OR their type is in the assigned list
-      if (!myType || types.includes(myType)) {
-        setAssignAlert({ ...incident, assignedTypes: types });
-        fetchIncidents();
+    socket.on("incident-assigned", (inc) => {
+      const types = parseTypes(inc.assignedTypes ?? inc.assigned_to_types);
+      const rtype = user.responder_type || "";
+      if (!rtype || types.includes(rtype)) {
+        setAssignAlert({ ...inc, assignedTypes: types });
+        fetchAll();
         try { new Audio("/alert.mp3").play().catch(() => {}); } catch {}
       }
     });
 
-    return () => {
-      clearInterval(interval);
-      socket.disconnect();
-    };
+    socket.on("new-ai-incident", (data) => {
+      const types = parseTypes(data.assignedTypes ?? data.assigned_to_types);
+      const rtype = user.responder_type || "";
+      if (!rtype || types.includes(rtype)) fetchAll();
+    });
+
+    return () => { clearInterval(iv); socket.disconnect(); };
   }, [user.id]);
 
-  const showNotification = (message, type) => {
-    setNotification({ show: true, message, type });
-    setTimeout(() => setNotification({ show: false, message: "", type: "" }), 3000);
-  };
+  /* ── derived ── */
+  const allInc = useMemo(() => [
+    ...myIncidents.map(i => ({ ...i, _src: "reporter" })),
+    ...aiIncidents.map(i => ({ ...i, _src: "cctv" })),
+  ], [myIncidents, aiIncidents]);
 
-  const stats = useMemo(() => {
-    const total = incidents.length;
-    const inProgress = incidents.filter((i) => i.status === "In Progress").length;
-    const resolved = incidents.filter((i) => i.status === "Resolved").length;
-    const pending = incidents.filter((i) => i.status === "Pending" || !i.status).length;
-    const highPriority = incidents.filter((i) => i.priority === "High" || i.priority === "Critical").length;
+  const filtered = useMemo(() => {
+    if (filterStatus === "all") return allInc;
+    return allInc.filter(i => (i.status || "").toLowerCase() === filterStatus);
+  }, [allInc, filterStatus]);
 
-    return { total, inProgress, resolved, pending, highPriority };
-  }, [incidents]);
+  const stats = useMemo(() => ({
+    total:    allInc.length,
+    pending:  allInc.filter(i => ["pending","Pending","pending_review"].includes(i.status)).length,
+    assigned: allInc.filter(i => ["assigned","In Progress","in_progress"].includes(i.status)).length,
+    resolved: allInc.filter(i => ["resolved","Resolved"].includes(i.status)).length,
+    critical: allInc.filter(i => ["Critical Emergency","critical"].includes(i.severity || i.priority)).length,
+    cctv:     aiIncidents.length,
+  }), [allInc, aiIncidents]);
 
-  const updateIncidentStatus = async (incidentId, status) => {
-    setUpdatingStatus(true);
+  /* ── status update ── */
+  const updateStatus = async (inc, status) => {
+    setUpdatingId(inc.id);
     try {
-      await axios.put(`${API_URL}/incidents/${incidentId}`, { status });
-      showNotification(`Incident status updated to ${status}`, "success");
-      fetchIncidents();
-      setShowModal(false);
-    } catch (error) {
-      console.error("Error updating status:", error);
-      showNotification("Failed to update status", "error");
+      if (inc._src === "cctv") {
+        await axios.put(`${API_URL}/super-responder/incidents/${inc.id}/status`, { status });
+      } else {
+        await axios.put(`${API_URL}/incidents/${inc.id}`, { status });
+      }
+      setAiIncidents(prev => prev.map(i => i.id === inc.id ? { ...i, status } : i));
+      setMyIncidents(prev => prev.map(i => i.id === inc.id ? { ...i, status } : i));
+      if (selectedInc?.id === inc.id) setSelectedInc(prev => ({ ...prev, status }));
+      showToast(`Status updated to ${status}`);
+    } catch {
+      showToast("Failed to update status", "error");
     } finally {
-      setUpdatingStatus(false);
+      setUpdatingId(null);
     }
   };
 
-  const handleViewDetails = (incident) => {
-    setSelectedIncident(incident);
-    setShowModal(true);
-  };
-
-  const getPriorityColor = (priority) => {
-    switch (priority?.toLowerCase()) {
-      case 'critical': return 'bg-red-100 text-red-700 border-red-200';
-      case 'high': return 'bg-orange-100 text-orange-700 border-orange-200';
-      case 'medium': return 'bg-yellow-100 text-yellow-700 border-yellow-200';
-      default: return 'bg-green-100 text-green-700 border-green-200';
-    }
-  };
-
-  const getStatusColor = (status) => {
-    switch (status?.toLowerCase()) {
-      case 'resolved': return 'bg-green-100 text-green-700';
-      case 'in progress': return 'bg-blue-100 text-blue-700';
-      default: return 'bg-yellow-100 text-yellow-700';
-    }
-  };
-
-  const formatDate = (dateString) => {
-    if (!dateString) return "N/A";
-    const date = new Date(dateString);
-    return date.toLocaleString();
-  };
-
-  const handleRefresh = () => {
-    fetchIncidents();
-  };
-
-  const StatCard = ({ title, value, icon, color = "blue" }) => {
-    const colorMap = {
-      blue: "border-blue-200 text-blue-600 bg-blue-50/30",
-      emerald: "border-emerald-200 text-emerald-600 bg-emerald-50/30",
-      amber: "border-amber-200 text-amber-600 bg-amber-50/30",
-      rose: "border-rose-200 text-rose-600 bg-rose-50/30",
-    };
-
-    return (
-      <div className={`bg-white border ${colorMap[color]} rounded-2xl p-6 shadow-sm hover:shadow-md transition-all hover:-translate-y-0.5`}>
-        <div className="flex items-start justify-between mb-4">
-          <div className="text-3xl opacity-80">{icon}</div>
-          <div className={`text-xs font-medium px-2 py-1 rounded-full ${colorMap[color]}`}>
-            {title === "High Priority" ? "URGENT" : "Active"}
-          </div>
-        </div>
-        <p className="text-zinc-500 text-sm tracking-wide mb-1">{title}</p>
-        <h3 className="text-4xl font-bold tracking-tighter text-zinc-900">
-          {value}
-        </h3>
+  /* ── KPI card ── */
+  const KpiCard = ({ label, value, icon: Icon, accent, bg, border, badge }) => (
+    <div className={`${bg} border ${border} rounded-xl p-4 flex flex-col gap-2 relative overflow-hidden`}>
+      <div className={`absolute top-0 right-0 w-14 h-14 rounded-bl-full opacity-10 ${bg}`} />
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{label}</span>
+        <div className={`p-1.5 rounded-lg ${bg} border ${border} ${accent}`}><Icon size={13} /></div>
       </div>
-    );
-  };
+      <p className={`text-3xl font-black ${accent}`}>{loading ? "—" : value}</p>
+      {badge && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full w-fit ${bg} border ${border} ${accent}`}>{badge}</span>}
+    </div>
+  );
 
   return (
-    <div className="flex h-screen bg-zinc-50 text-zinc-900 overflow-hidden">
+    <div className="flex h-screen bg-slate-950 text-white overflow-hidden">
       <ResponderSidebar activeTab="dashboard" setActiveTab={() => {}} user={user} />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Notification Toast */}
-        {notification.show && (
-          <div className={`fixed top-20 right-6 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg animate-slide-in ${
-            notification.type === "success" ? "bg-emerald-500 text-white" : "bg-red-500 text-white"
-          }`}>
-            {notification.type === "success" ? <CheckCircle size={18} /> : <AlertTriangle size={18} />}
-            <span className="text-sm font-medium">{notification.message}</span>
+
+        {/* ── Toast ── */}
+        {toast && (
+          <div className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-semibold shadow-xl ${toast.type === "error" ? "bg-red-600" : "bg-emerald-600"}`}>
+            {toast.type === "error" ? <AlertTriangle size={15} /> : <CheckCircle size={15} />}
+            {toast.msg}
           </div>
         )}
 
-        {/* 🚨 Incident Assigned Alert Banner */}
+        {/* ── Incoming alert modal ── */}
         {assignAlert && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="bg-white rounded-2xl shadow-2xl border-2 border-red-500 w-full max-w-md mx-4 overflow-hidden animate-bounce-in">
-              {/* Header */}
-              <div className="bg-red-600 px-5 py-4 flex items-center gap-3">
-                <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center flex-shrink-0 animate-pulse">
-                  <BellRing size={22} className="text-white" />
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+            <div className="bg-slate-900 border-2 border-red-600/60 rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+              <div className="bg-red-900/40 border-b border-red-700/40 px-5 py-4 flex items-center gap-3">
+                <div className="w-10 h-10 bg-red-500/20 rounded-full flex items-center justify-center flex-shrink-0 animate-pulse border border-red-500/40">
+                  <BellRing size={20} className="text-red-400" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-white font-bold text-base">🚨 Incident Assigned to You</p>
-                  <p className="text-red-200 text-xs">Immediate response required</p>
+                  <p className="text-white font-bold">🚨 Incident Assigned to You</p>
+                  <p className="text-red-300 text-xs">Immediate response required</p>
                 </div>
-                <button onClick={() => setAssignAlert(null)} className="text-white/60 hover:text-white">
-                  <X size={18} />
-                </button>
+                <button onClick={() => setAssignAlert(null)} className="text-slate-500 hover:text-white"><X size={16} /></button>
               </div>
-
-              {/* Body */}
-              <div className="px-5 py-4 space-y-3">
-                <div className="bg-red-50 border border-red-200 rounded-xl p-3">
-                  <p className="text-sm font-semibold text-zinc-900 leading-snug">
-                    {assignAlert.decision || "New Incident Detected"}
-                  </p>
+              <div className="p-5 space-y-3">
+                <div className="bg-red-950/40 border border-red-800/40 rounded-xl p-3">
+                  <p className="text-sm font-semibold text-white">{assignAlert.decision || "New Incident Detected"}</p>
                 </div>
-
                 <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200">
-                    <p className="text-zinc-400 mb-0.5">Severity</p>
-                    <p className={`font-bold ${
-                      assignAlert.severity === "Critical Emergency" ? "text-red-600"
-                      : assignAlert.severity === "Medium Risk" ? "text-amber-600"
-                      : "text-emerald-600"
-                    }`}>{assignAlert.severity || "Unknown"}</p>
-                  </div>
-                  <div className="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200">
-                    <p className="text-zinc-400 mb-0.5">Category</p>
-                    <p className="font-bold text-zinc-800">{assignAlert.incidentCategory || "General"}</p>
-                  </div>
-                  <div className="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200">
-                    <p className="text-zinc-400 mb-0.5">Location</p>
-                    <p className="font-bold text-zinc-800 truncate">{assignAlert.location || "Unknown"}</p>
-                  </div>
-                  <div className="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200">
-                    <p className="text-zinc-400 mb-0.5">Assigned by</p>
-                    <p className="font-bold text-zinc-800 capitalize">{assignAlert.assignedBy || "system"}</p>
-                  </div>
+                  {[
+                    ["Severity",    assignAlert.severity || "Unknown"],
+                    ["Category",    assignAlert.incidentCategory || "General"],
+                    ["Location",    assignAlert.location || "Unknown"],
+                    ["Assigned by", assignAlert.assignedBy || "system"],
+                  ].map(([k, v]) => (
+                    <div key={k} className="bg-slate-800/60 border border-slate-700/40 rounded-xl p-2.5">
+                      <p className="text-slate-500 mb-0.5">{k}</p>
+                      <p className="font-bold text-white truncate capitalize">{v}</p>
+                    </div>
+                  ))}
                 </div>
-
-                {/* Assigned teams */}
-                <div>
-                  <p className="text-xs text-zinc-400 mb-1.5">Teams dispatched</p>
+                {assignAlert.assignedTypes?.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
-                    {(Array.isArray(assignAlert.assignedTypes)
-                      ? assignAlert.assignedTypes
-                      : JSON.parse(assignAlert.assignedTypes || "[]")
-                    ).map(t => (
-                      <span key={t} className="text-xs bg-blue-100 text-blue-700 font-semibold px-2.5 py-1 rounded-full border border-blue-200">
-                        {t}
+                    {assignAlert.assignedTypes.map(t => (
+                      <span key={t} className="text-xs bg-blue-900/40 border border-blue-700/40 text-blue-300 font-semibold px-2.5 py-1 rounded-full">
+                        {RESPONDER_EMOJI[t] || "🛡️"} {t}
                       </span>
                     ))}
                   </div>
-                </div>
-
-                {assignAlert.notes && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-2.5">
-                    <p className="text-xs text-amber-600 font-semibold mb-0.5">Emergency Notes</p>
-                    <p className="text-xs text-zinc-700">{assignAlert.notes}</p>
-                  </div>
                 )}
               </div>
-
-              {/* Footer */}
               <div className="px-5 pb-5 flex gap-2">
-                <button
-                  onClick={() => setAssignAlert(null)}
-                  className="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2">
-                  <CheckCircle size={15} /> Acknowledge
+                <button onClick={() => setAssignAlert(null)}
+                  className="flex-1 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-colors">
+                  <CheckCircle size={14} /> Acknowledge
                 </button>
-                <button
-                  onClick={() => setAssignAlert(null)}
-                  className="px-4 py-2.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-600 rounded-xl text-sm font-bold transition-colors">
+                <button onClick={() => setAssignAlert(null)}
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-xl text-sm font-bold transition-colors">
                   Dismiss
                 </button>
               </div>
@@ -266,302 +260,273 @@ const ResponderDashboard = () => {
           </div>
         )}
 
-        {/* Top Navbar */}
-        <header className="h-16 bg-white border-b border-zinc-200 px-6 flex items-center justify-between shadow-sm">
-          <div className="flex items-center gap-4">
-            <div className="p-2 bg-blue-100 rounded-xl">
-              <Shield className="w-6 h-6 text-blue-600" />
+        {/* ── Header ── */}
+        <header className="h-14 bg-slate-900 border-b border-slate-800 px-6 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
+              <Shield size={15} className="text-blue-400" />
             </div>
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight">Responder Dashboard</h1>
-              <div className="flex items-center gap-2 mt-0.5">
-                <p className="text-sm text-zinc-500">Field Operations • Real-time Monitoring</p>
-                {user?.responder_type && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
-                    {{
-                      "Fire Brigade":       "🔥",
-                      "Armed Police":       "🔫",
-                      "Ambulance":          "🩸",
-                      "Construction Safety":"🏗️",
-                      "Traffic Police":     "🚗",
-                      "Crowd Control":      "👥",
-                      "Emergency Patrol":   "🚑",
-                      "Site Inspector":     "🏗️",
-                      "General Responder":  "⚠️",
-                    }[user.responder_type] || "🛡️"} {user.responder_type}
-                  </span>
-                )}
-              </div>
+              <h1 className="text-sm font-bold leading-none">Responder Dashboard</h1>
+              <p className="text-[10px] text-slate-500 mt-0.5">Field Operations · {lastUpdated.toLocaleTimeString()}</p>
             </div>
+            {user?.responder_type && (
+              <span className="hidden sm:inline-flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-300">
+                {RESPONDER_EMOJI[user.responder_type] || "🛡️"} {user.responder_type}
+              </span>
+            )}
           </div>
-
-          <div className="flex items-center gap-4">
-            <div className="hidden md:block text-xs text-zinc-400">
-              Last updated: {lastUpdated.toLocaleTimeString()}
-            </div>
-            <button 
-              onClick={handleRefresh}
-              className="p-2.5 hover:bg-zinc-100 rounded-xl transition-colors"
-            >
-              <RefreshCw size={18} className="text-zinc-600" />
+          <div className="flex items-center gap-2">
+            <span className={`flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-1.5 rounded-lg border ${isConnected ? "bg-emerald-500/8 border-emerald-500/20 text-emerald-400" : "bg-slate-800 border-slate-700 text-slate-500"}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? "bg-emerald-400 animate-pulse" : "bg-slate-600"}`} />
+              {isConnected ? "LIVE" : "OFFLINE"}
+            </span>
+            <button onClick={fetchAll} className="p-1.5 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors">
+              <RefreshCw size={13} />
             </button>
-            <div className="flex items-center gap-3 pl-4 border-l border-zinc-200">
-              <div className="text-right hidden sm:block">
-                <p className="text-sm font-medium text-zinc-900">{user?.fullName || user?.full_name}</p>
-                <p className="text-xs text-blue-600">● Online</p>
+            <div className="flex items-center gap-2 pl-3 border-l border-slate-800">
+              <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-blue-700 rounded-xl flex items-center justify-center font-bold text-xs">
+                {(user?.fullName || user?.full_name || "R").charAt(0).toUpperCase()}
               </div>
-              <div className="w-9 h-9 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center font-semibold text-white">
-                {user?.fullName?.charAt(0) || "R"}
+              <div className="hidden sm:block text-right">
+                <p className="text-xs font-semibold">{user?.fullName || user?.full_name || "Responder"}</p>
+                <p className="text-[10px] text-blue-400">● Online</p>
               </div>
             </div>
           </div>
         </header>
 
-        {/* Main Content */}
-        <main className="flex-1 p-6 md:p-8 overflow-auto bg-zinc-50">
-          {/* Stats Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <StatCard title="Total Assigned" value={stats.total} icon={<MapPin size={28} />} color="blue" />
-            <StatCard title="In Progress" value={stats.inProgress} icon={<Clock size={28} />} color="amber" />
-            <StatCard title="Resolved" value={stats.resolved} icon={<CheckCircle size={28} />} color="emerald" />
-            <StatCard title="High Priority" value={stats.highPriority} icon={<AlertTriangle size={28} />} color="rose" />
+        {/* ── Main ── */}
+        <main className="flex-1 overflow-y-auto p-4 space-y-4">
+
+          {/* KPI row */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <KpiCard label="Total"       value={stats.total}    icon={Target}        accent="text-slate-300"   bg="bg-slate-800/40"    border="border-white/5"          badge="ALL" />
+            <KpiCard label="Pending"     value={stats.pending}  icon={Clock}         accent="text-yellow-400"  bg="bg-yellow-500/5"   border="border-yellow-500/15"    badge="QUEUE" />
+            <KpiCard label="In Progress" value={stats.assigned} icon={Activity}      accent="text-blue-400"    bg="bg-blue-500/5"     border="border-blue-500/15"      badge="ACTIVE" />
+            <KpiCard label="Resolved"    value={stats.resolved} icon={CheckCircle}   accent="text-emerald-400" bg="bg-emerald-500/5"  border="border-emerald-500/15"   badge="DONE" />
+            <KpiCard label="Critical"    value={stats.critical} icon={Flame}         accent="text-red-400"     bg="bg-red-500/5"      border="border-red-500/20"       badge="URGENT" />
+            <KpiCard label="AI / CCTV"   value={stats.cctv}    icon={Cpu}           accent="text-purple-400"  bg="bg-purple-500/5"   border="border-purple-500/15"    badge="AI" />
           </div>
 
-          {/* Quick Status Update */}
-          <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-6 mb-8">
-            <div className="flex items-center gap-3 mb-4">
-              <Activity size={20} className="text-blue-600" />
-              <h2 className="text-lg font-semibold text-zinc-900">Quick Actions</h2>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              <button 
-                onClick={() => window.location.href = "/responder/incidents"}
-                className="flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl transition-colors font-medium"
-              >
-                <Eye size={18} />
-                View All Incidents
-              </button>
-              <button 
-                onClick={() => window.open("https://maps.google.com", "_blank")}
-                className="flex items-center justify-center gap-2 px-4 py-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl transition-colors font-medium"
-              >
-                <Navigation size={18} />
-                Open Navigation
-              </button>
-              <button 
-                onClick={() => alert("Emergency contacts will be displayed here")}
-                className="flex items-center justify-center gap-2 px-4 py-3 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-xl transition-colors font-medium"
-              >
-                <Phone size={18} />
-                Emergency Contacts
-              </button>
-            </div>
-          </div>
+          {/* Two-col: incident list + side panel */}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
 
-          {/* Live Map Section */}
-          <div className="mb-8">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold flex items-center gap-2 text-zinc-900">
-                <MapPin size={20} className="text-blue-600" />
-                My Assigned Incidents Map
-                <span className="text-xs px-3 py-1 bg-blue-100 text-blue-700 rounded-full font-medium">LIVE</span>
-              </h2>
-              <p className="text-sm text-zinc-500">{incidents.length} incident{incidents.length !== 1 ? 's' : ''} on map</p>
-            </div>
-            <div className="bg-white border border-zinc-200 rounded-2xl shadow-sm overflow-hidden h-[400px]">
-              <MapView incidents={incidents} />
-            </div>
-          </div>
-
-          {/* Recent Incidents Table */}
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-zinc-900">My Assigned Incidents</h2>
-              {incidents.length > 0 && (
-                <p className="text-sm text-zinc-500">
-                  {incidents.length} assigned incident{incidents.length > 1 ? 's' : ''}
-                </p>
-              )}
-            </div>
-            
-            <div className="bg-white border border-zinc-200 rounded-2xl shadow-sm overflow-hidden">
-              {loading ? (
-                <div className="py-20 text-center">
-                  <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
-                  <p className="text-zinc-500">Loading your incidents...</p>
+            {/* Incident list — 2/3 width */}
+            <div className="xl:col-span-2 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col">
+              {/* list header */}
+              <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2 flex-shrink-0">
+                <Shield size={13} className="text-blue-400" />
+                <span className="text-xs font-bold text-slate-300">My Assigned Incidents</span>
+                <span className="text-[10px] font-bold bg-blue-500/10 border border-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full ml-1">{allInc.length}</span>
+                <div className="flex items-center gap-1 ml-auto">
+                  {[["all","All"],["pending","Pending"],["assigned","Active"],["resolved","Resolved"]].map(([k,l]) => (
+                    <button key={k} onClick={() => setFilterStatus(k)}
+                      className={`px-2 py-0.5 text-[10px] font-bold rounded-lg transition-all ${filterStatus === k ? "bg-blue-700 text-white" : "text-slate-500 hover:text-slate-300"}`}>
+                      {l}
+                    </button>
+                  ))}
                 </div>
-              ) : incidents.length === 0 ? (
-                <div className="py-20 text-center">
-                  <Shield className="w-12 h-12 text-zinc-300 mx-auto mb-3" />
-                  <p className="text-zinc-500 font-medium">No assigned incidents</p>
-                  <p className="text-sm text-zinc-400 mt-1">You have no incidents assigned at the moment</p>
+              </div>
+
+              {/* list body */}
+              <div className="flex-1 overflow-y-auto divide-y divide-slate-800/60" style={{ maxHeight: 480 }}>
+                {loading ? (
+                  <div className="py-16 flex flex-col items-center justify-center text-slate-600">
+                    <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-3" />
+                    <p className="text-sm">Loading incidents…</p>
+                  </div>
+                ) : filtered.length === 0 ? (
+                  <div className="py-16 flex flex-col items-center justify-center text-slate-600">
+                    <Target size={32} className="mb-3 opacity-30" />
+                    <p className="text-sm font-semibold text-slate-500">No incidents found</p>
+                    <p className="text-xs text-slate-600 mt-1">You're all clear for this filter</p>
+                  </div>
+                ) : filtered.map(inc => {
+                  const isAI = inc._src === "cctv";
+                  const sevCls = SEV_CLS[inc.severity] || "bg-slate-700/50 border-slate-600/50 text-slate-400";
+                  const isSelected = selectedInc?.id === inc.id && selectedInc?._src === inc._src;
+                  return (
+                    <div key={`${inc._src}-${inc.id}`}
+                      onClick={() => setSelectedInc(isSelected ? null : inc)}
+                      className={`px-4 py-3 cursor-pointer transition-all hover:bg-slate-800/40 ${isSelected ? "bg-slate-800/60 border-l-2 border-blue-500" : ""}`}>
+                      <div className="flex items-start gap-3">
+                        <div className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${inc.severity === "Critical Emergency" ? "bg-red-500 animate-pulse" : inc.severity === "Medium Risk" ? "bg-yellow-400" : "bg-emerald-400"}`} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <p className="text-xs font-semibold text-white truncate">{inc.decision || inc.incident_category || inc.type || `Incident #${inc.id}`}</p>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              {isAI && <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-purple-500/10 border border-purple-500/20 text-purple-400">🤖 AI</span>}
+                              <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full border ${sevCls}`}>{(inc.severity || "Low Risk").replace(" Risk","").replace(" Emergency","")}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 text-[10px] text-slate-500">
+                            {inc.location && <span className="flex items-center gap-1"><MapPin size={9} />{inc.location}</span>}
+                            {inc.accident_confidence > 0 && <span className="flex items-center gap-1"><Cpu size={9} />{inc.accident_confidence}%</span>}
+                            <span className="flex items-center gap-1 ml-auto"><Clock size={9} />{fmtTime(inc.created_at || inc.detected_at)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Side panel: incident detail OR quick actions */}
+            <div className="flex flex-col gap-3">
+
+              {/* Incident detail card */}
+              {selectedInc ? (
+                <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col">
+                  <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-300">Incident #{selectedInc.id}</span>
+                    <button onClick={() => setSelectedInc(null)} className="text-slate-600 hover:text-white"><X size={14} /></button>
+                  </div>
+                  <div className="p-4 space-y-3">
+                    <p className="text-sm font-bold text-white leading-snug">{selectedInc.decision || selectedInc.incident_category || selectedInc.type || "Unknown"}</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        ["Severity",  selectedInc.severity || "—"],
+                        ["Status",    (selectedInc.status || "pending").replace("_"," ")],
+                        ["Location",  selectedInc.location || "—"],
+                        ["AI Conf",   selectedInc.accident_confidence ? `${selectedInc.accident_confidence}%` : "—"],
+                      ].map(([k,v]) => (
+                        <div key={k} className="bg-slate-800/60 border border-slate-700/40 rounded-lg p-2">
+                          <p className="text-[9px] text-slate-500 mb-0.5">{k}</p>
+                          <p className="text-[10px] font-bold text-white capitalize truncate">{v}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {parseTypes(selectedInc.assigned_to_types).length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {parseTypes(selectedInc.assigned_to_types).map(t => (
+                          <span key={t} className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-900/40 border border-blue-700/30 text-blue-300">
+                            {RESPONDER_EMOJI[t]} {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {selectedInc.notes && (
+                      <p className="text-[10px] text-slate-400 bg-slate-800/40 rounded-lg p-2 border border-slate-700/30">{selectedInc.notes}</p>
+                    )}
+                    {/* Action buttons */}
+                    <div className="grid grid-cols-1 gap-1.5 pt-1">
+                      {!["resolved","Resolved"].includes(selectedInc.status) && (
+                        <>
+                          <button
+                            onClick={() => updateStatus(selectedInc, selectedInc._src === "cctv" ? "in_progress" : "In Progress")}
+                            disabled={updatingId === selectedInc.id}
+                            className="w-full py-2 bg-blue-600/20 border border-blue-600/30 hover:bg-blue-600/30 text-blue-300 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40">
+                            <Activity size={11} /> Mark In Progress
+                          </button>
+                          <button
+                            onClick={() => updateStatus(selectedInc, selectedInc._src === "cctv" ? "resolved" : "Resolved")}
+                            disabled={updatingId === selectedInc.id}
+                            className="w-full py-2 bg-emerald-600/20 border border-emerald-600/30 hover:bg-emerald-600/30 text-emerald-300 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-40">
+                            <CheckCircle size={11} /> Mark Resolved
+                          </button>
+                        </>
+                      )}
+                      {(selectedInc.latitude || selectedInc.longitude) && (
+                        <button
+                          onClick={() => window.open(`https://maps.google.com?q=${selectedInc.latitude},${selectedInc.longitude}`, "_blank")}
+                          className="w-full py-2 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-bold flex items-center justify-center gap-1.5 transition-colors">
+                          <Navigation size={11} /> Navigate
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-zinc-50 border-b border-zinc-200">
-                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">ID</th>
-                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Type</th>
-                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Priority</th>
-                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Status</th>
-                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Location</th>
-                        <th className="px-6 py-4 text-left font-medium text-zinc-500 text-xs uppercase tracking-wider">Reported</th>
-                        <th className="px-6 py-4 text-center font-medium text-zinc-500 text-xs uppercase tracking-wider">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-100">
-                      {incidents.slice(0, 10).map((incident) => (
-                        <tr key={incident.id} className="hover:bg-zinc-50/50 transition-colors group">
-                          <td className="px-6 py-4 font-mono text-xs text-zinc-500">#{incident.id}</td>
-                          <td className="px-6 py-4">
-                            <div className="flex items-center gap-2">
-                              <AlertTriangle size={14} className="text-zinc-400" />
-                              <span className="font-medium text-zinc-900">{incident.type || "Unknown"}</span>
-                            </div>
-                          </td>
-                          <td className="px-6 py-4">
-                            <span className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${getPriorityColor(incident.priority)}`}>
-                              {incident.priority || "Normal"}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4">
-                            <span className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${getStatusColor(incident.status)}`}>
-                              {incident.status || "Pending"}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-zinc-600 text-xs">
-                            {incident.latitude && incident.longitude 
-                              ? `${parseFloat(incident.latitude).toFixed(4)}, ${parseFloat(incident.longitude).toFixed(4)}`
-                              : "Unknown"}
-                          </td>
-                          <td className="px-6 py-4 text-zinc-500 text-xs">
-                            {formatDate(incident.created_at)}
-                          </td>
-                          <td className="px-6 py-4 text-center">
-                            <button
-                              onClick={() => handleViewDetails(incident)}
-                              className="p-2 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors"
-                              title="View Details"
-                            >
-                              <Eye size={16} />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                /* Quick actions */
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                  <p className="text-xs font-bold text-slate-400 mb-3 flex items-center gap-1.5"><Zap size={12} className="text-yellow-400" /> Quick Actions</p>
+                  <div className="space-y-1.5">
+                    {[
+                      { label: "View All Incidents", icon: Eye,       href: "/responder/incidents", cls: "text-blue-300 bg-blue-500/8 border-blue-500/15 hover:bg-blue-500/15" },
+                      { label: "Live CCTV Feeds",    icon: Video,     href: "/responder/cctv",      cls: "text-purple-300 bg-purple-500/8 border-purple-500/15 hover:bg-purple-500/15" },
+                      { label: "Analytics",          icon: Activity,  href: "/responder/analytics", cls: "text-emerald-300 bg-emerald-500/8 border-emerald-500/15 hover:bg-emerald-500/15" },
+                    ].map(({ label, icon: Icon, href, cls }) => (
+                      <button key={label} onClick={() => window.location.href = href}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 border rounded-xl text-xs font-bold transition-all ${cls}`}>
+                        <Icon size={13} /> {label} <ChevronRight size={12} className="ml-auto opacity-40" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Camera stats */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <p className="text-xs font-bold text-slate-400 mb-3 flex items-center gap-1.5">
+                  <Video size={12} className="text-cyan-400" /> Camera Overview
+                </p>
+                <div className="space-y-2">
+                  {[
+                    { label: "Total Cameras",  value: cameraStats.total,  icon: Video, cls: "text-slate-300" },
+                    { label: "Active / Live",  value: cameraStats.active,  icon: cameraStats.active > 0 ? Wifi : WifiOff, cls: "text-emerald-400" },
+                    { label: "Total Alerts",   value: cameraStats.alerts,  icon: AlertTriangle, cls: "text-red-400" },
+                  ].map(({ label, value, icon: Icon, cls }) => (
+                    <div key={label} className="flex items-center justify-between px-3 py-2 bg-slate-800/50 rounded-lg border border-slate-700/40">
+                      <div className="flex items-center gap-2">
+                        <Icon size={12} className={cls} />
+                        <span className="text-[10px] text-slate-400">{label}</span>
+                      </div>
+                      <span className={`text-sm font-black ${cls}`}>{loading ? "—" : value}</span>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => window.location.href = "/responder/cctv"}
+                  className="mt-2 w-full py-1.5 text-[10px] font-bold text-cyan-400 bg-cyan-500/8 border border-cyan-500/15 rounded-lg hover:bg-cyan-500/15 transition-colors">
+                  Open CCTV Dashboard →
+                </button>
+              </div>
+
+              {/* Emergency contacts */}
+              {emergencyContacts.length > 0 && (
+                <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2">
+                    <Phone size={12} className="text-emerald-400" />
+                    <span className="text-xs font-bold text-slate-300">Emergency Contacts</span>
+                  </div>
+                  <div className="divide-y divide-slate-800/60">
+                    {emergencyContacts.slice(0, 4).map(c => (
+                      <div key={c.id} className="px-4 py-2.5 flex items-center gap-3 group hover:bg-slate-800/40 transition-colors">
+                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-sm flex-shrink-0" style={{ background: (c.color || "#E63939") + "20" }}>
+                          {c.icon === "fire" ? "🔥" : c.icon === "shield" ? "🛡️" : "📞"}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[10px] font-semibold text-white truncate">{c.name}</p>
+                          <p className="text-[9px] text-slate-500 truncate">{c.description || ""}</p>
+                        </div>
+                        <a href={`tel:${c.number}`}
+                          className="text-[9px] font-bold text-emerald-400 opacity-0 group-hover:opacity-100 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-lg flex items-center gap-1 transition-opacity">
+                          <Phone size={9} /> {c.number}
+                        </a>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
           </div>
+
+          {/* Live incident map */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2">
+              <MapPin size={13} className="text-blue-400" />
+              <span className="text-xs font-bold text-slate-300">Incident Map</span>
+              <span className="text-[10px] font-bold bg-blue-500/10 border border-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded-full ml-1">LIVE</span>
+              <span className="text-[10px] text-slate-500 ml-auto">{allInc.length} active</span>
+            </div>
+            <div className="h-72">
+              <MapView incidents={allInc} />
+            </div>
+          </div>
+
         </main>
       </div>
-
-      {/* Incident Detail Modal */}
-      {showModal && selectedIncident && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
-          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="p-6 border-b border-zinc-200 flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-semibold text-zinc-900">Incident #{selectedIncident.id}</h2>
-                <p className="text-sm text-zinc-500 mt-1">{selectedIncident.type || "Unknown Type"}</p>
-              </div>
-              <button onClick={() => setShowModal(false)} className="p-2 hover:bg-zinc-100 rounded-lg transition-colors">
-                <X size={20} className="text-zinc-500" />
-              </button>
-            </div>
-
-            <div className="overflow-y-auto p-6 space-y-6">
-              {/* Details Grid */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-zinc-50 p-3 rounded-xl">
-                  <p className="text-zinc-500 text-xs mb-1">Priority</p>
-                  <p className={`inline-flex px-3 py-1 text-xs font-semibold rounded-full ${getPriorityColor(selectedIncident.priority)}`}>
-                    {selectedIncident.priority || "Normal"}
-                  </p>
-                </div>
-                <div className="bg-zinc-50 p-3 rounded-xl">
-                  <p className="text-zinc-500 text-xs mb-1">Current Status</p>
-                  <select
-                    value={selectedIncident.status || "Pending"}
-                    onChange={(e) => updateIncidentStatus(selectedIncident.id, e.target.value)}
-                    disabled={updatingStatus}
-                    className={`px-3 py-1 text-xs font-semibold rounded-full border-none focus:ring-1 focus:ring-blue-400 ${getStatusColor(selectedIncident.status)}`}
-                  >
-                    <option value="Pending">Pending</option>
-                    <option value="In Progress">In Progress</option>
-                    <option value="Resolved">Resolved</option>
-                  </select>
-                </div>
-                <div className="bg-zinc-50 p-3 rounded-xl">
-                  <p className="text-zinc-500 text-xs mb-1">Reported By</p>
-                  <p className="font-medium text-zinc-900">{selectedIncident.reporter_name || "Anonymous"}</p>
-                </div>
-                <div className="bg-zinc-50 p-3 rounded-xl">
-                  <p className="text-zinc-500 text-xs mb-1">Reported At</p>
-                  <p className="font-medium text-zinc-900 text-sm">{formatDate(selectedIncident.created_at)}</p>
-                </div>
-                <div className="bg-zinc-50 p-3 rounded-xl col-span-2">
-                  <p className="text-zinc-500 text-xs mb-1">Location</p>
-                  <p className="font-medium text-zinc-900 text-sm flex items-center gap-2">
-                    <MapPin size={14} className="text-blue-500" />
-                    {selectedIncident.latitude && selectedIncident.longitude 
-                      ? `${parseFloat(selectedIncident.latitude).toFixed(6)}, ${parseFloat(selectedIncident.longitude).toFixed(6)}`
-                      : "Unknown"}
-                  </p>
-                </div>
-              </div>
-
-              {/* Description */}
-              {selectedIncident.description && (
-                <div className="bg-zinc-50 p-4 rounded-xl">
-                  <h3 className="font-medium text-zinc-900 mb-2">Description</h3>
-                  <p className="text-zinc-600 text-sm">{selectedIncident.description}</p>
-                </div>
-              )}
-
-              {/* Quick Actions */}
-              <div className="bg-blue-50 p-4 rounded-xl">
-                <h3 className="font-medium text-blue-900 mb-3">Quick Actions</h3>
-                <div className="flex gap-3">
-                  <button 
-                    onClick={() => window.open(`https://maps.google.com?q=${selectedIncident.latitude},${selectedIncident.longitude}`, "_blank")}
-                    className="flex-1 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
-                  >
-                    <Navigation size={16} />
-                    Navigate
-                  </button>
-                  <button 
-                    onClick={() => updateIncidentStatus(selectedIncident.id, "In Progress")}
-                    className="flex-1 py-2 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors"
-                  >
-                    Start Response
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-6 border-t border-zinc-200 flex gap-3">
-              <button
-                onClick={() => updateIncidentStatus(selectedIncident.id, "Resolved")}
-                disabled={updatingStatus}
-                className="flex-1 py-3 bg-emerald-500 text-white rounded-xl font-medium hover:bg-emerald-600 transition-colors disabled:opacity-50"
-              >
-                Mark as Resolved
-              </button>
-              <button
-                onClick={() => setShowModal(false)}
-                className="flex-1 py-3 bg-zinc-500 text-white rounded-xl font-medium hover:bg-zinc-600 transition-colors"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
-};
-
-export default ResponderDashboard;
+}

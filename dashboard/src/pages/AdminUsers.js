@@ -160,17 +160,16 @@ const AdminUsers = () => {
         // Update user
         const updateData = { ...formData };
         if (!updateData.password) delete updateData.password;
+        // Add requester info so backend knows this is an admin edit
+        updateData.requesterRole = user.role;
+        updateData.requesterId = user.id;
         await axios.put(`${API_URL}/users/${editingUser.id}`, updateData);
         showNotification("User updated successfully", "success");
       } else {
-        // Create user
-        if (!formData.password) {
-          showNotification("Password is required for new users", "error");
-          setUpdating(false);
-          return;
-        }
-        await axios.post(`${API_URL}/users/register`, formData);
-        showNotification("User created successfully", "success");
+        // Create user — backend always sets default password 'safecity1234'
+        const { password: _unused, ...createData } = formData;
+        await axios.post(`${API_URL}/users/register`, createData);
+        showNotification("User created. Default password: safecity1234 (user must change on first login)", "success");
       }
       setShowModal(false);
       fetchUsers();
@@ -489,27 +488,38 @@ const AdminUsers = () => {
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1.5">
-                  Password {!editingUser && "*"}
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all pr-11"
-                    value={formData.password}
-                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    placeholder={editingUser ? "Leave blank to keep current" : "Enter password"}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
-                  >
-                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
+              {/* Password field: only shown when editing; new users auto-get default password */}
+              {editingUser ? (
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1.5">
+                    Password
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      className="w-full px-4 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all pr-11"
+                      value={formData.password}
+                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                      placeholder="Leave blank to keep current"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                    >
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2">
+                  <span className="text-amber-500 mt-0.5">🔑</span>
+                  <div>
+                    <p className="text-sm font-medium text-amber-800">Default Password Auto-Set</p>
+                    <p className="text-xs text-amber-600 mt-0.5">Account will be created with password <code className="bg-amber-100 px-1.5 py-0.5 rounded font-mono font-bold">safecity1234</code>. The user will be required to change it on first login.</p>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium text-zinc-700 mb-1.5">Role</label>

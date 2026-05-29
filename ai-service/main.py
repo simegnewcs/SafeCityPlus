@@ -64,6 +64,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Import confusion matrix tracker
+from confusion_matrix import (
+    ConfusionMatrixTracker, 
+    SimpleConfusionTracker,
+    DetectionPrediction,
+    GroundTruthLabel,
+    object_detection_tracker,
+    alert_classification_tracker,
+    get_performance_report
+)
+
 # Initialize FastAPI app
 app = FastAPI(
     title="SafeCity+ AI Service",
@@ -90,6 +101,104 @@ start_time = time.time()
 
 # Thread pool for parallel processing
 executor = ThreadPoolExecutor(max_workers=4)
+
+# ============================================================================
+# PERFORMANCE OPTIMIZATION CONFIGURATION
+# ============================================================================
+@dataclass
+class PerformanceConfig:
+    """Performance tuning settings"""
+    # Image preprocessing
+    max_image_size: Tuple[int, int] = (640, 480)  # Resize large images
+    min_image_size: Tuple[int, int] = (320, 240)  # Minimum for small images
+    
+    # Detection confidence thresholds
+    yolo_conf_threshold: float = 0.30  # YOLO confidence threshold
+    fire_conf_threshold: float = 0.60   # Fire detection threshold
+    
+    # Frame sampling for video streams
+    frame_sample_rate: int = 3  # Process every Nth frame (1 = every frame)
+    min_frame_interval_ms: float = 500.0  # Minimum ms between analyses
+    
+    # Caching
+    cache_enabled: bool = True
+    cache_ttl_seconds: float = 2.0  # Cache results for 2 seconds
+    
+    # Async processing
+    use_async: bool = True
+    max_concurrent_requests: int = 10
+
+perf_config = PerformanceConfig()
+
+# Simple LRU cache for detection results
+class DetectionCache:
+    """Simple time-based cache for detection results"""
+    def __init__(self, ttl_seconds: float = 2.0):
+        self.cache = {}
+        self.ttl = ttl_seconds
+        self.hits = 0
+        self.misses = 0
+    
+    def _get_key(self, img) -> str:
+        """Generate cache key from image"""
+        if not NUMPY_AVAILABLE or not PIL_AVAILABLE:
+            return None
+        try:
+            # Use small thumbnail hash as key
+            thumb = img.resize((32, 32))
+            arr = np.array(thumb)
+            return hash(arr.tobytes())
+        except:
+            return None
+    
+    def get(self, img) -> Optional[List[Dict]]:
+        """Get cached result if not expired"""
+        if not perf_config.cache_enabled:
+            return None
+        key = self._get_key(img)
+        if key is None:
+            return None
+        
+        if key in self.cache:
+            result, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                self.hits += 1
+                return result
+            else:
+                del self.cache[key]
+        
+        self.misses += 1
+        return None
+    
+    def set(self, img, result: List[Dict]):
+        """Cache detection result"""
+        if not perf_config.cache_enabled:
+            return
+        key = self._get_key(img)
+        if key is not None:
+            self.cache[key] = (result, time.time())
+            # Cleanup old entries
+            now = time.time()
+            expired = [k for k, (r, ts) in self.cache.items() if now - ts > self.ttl]
+            for k in expired:
+                del self.cache[k]
+    
+    def get_stats(self) -> Dict[str, int]:
+        """Get cache statistics"""
+        total = self.hits + self.misses
+        hit_rate = (self.hits / total * 100) if total > 0 else 0
+        return {
+            'hits': self.hits,
+            'misses': self.misses,
+            'hit_rate_percent': round(hit_rate, 1),
+            'size': len(self.cache)
+        }
+
+# Initialize detection cache
+detection_cache = DetectionCache(ttl_seconds=perf_config.cache_ttl_seconds)
+
+# Frame throttling tracking
+frame_last_analysis = defaultdict(float)
 
 # Load YOLO if available
 yolo_model = None
@@ -941,7 +1050,80 @@ async def get_metrics():
             "disk_usage": psutil.disk_usage('/').percent
         }
     
+    # Add cache metrics
+    metrics["cache"] = detection_cache.get_stats()
+    
+    # Add performance config
+    metrics["performance"] = {
+        "max_image_size": perf_config.max_image_size,
+        "frame_sample_rate": perf_config.frame_sample_rate,
+        "min_frame_interval_ms": perf_config.min_frame_interval_ms,
+        "cache_enabled": perf_config.cache_enabled,
+        "cache_ttl_seconds": perf_config.cache_ttl_seconds
+    }
+    
     return metrics
+
+
+@app.get("/performance/config")
+async def get_performance_config():
+    """Get current performance configuration"""
+    return {
+        "max_image_size": perf_config.max_image_size,
+        "min_image_size": perf_config.min_image_size,
+        "yolo_conf_threshold": perf_config.yolo_conf_threshold,
+        "fire_conf_threshold": perf_config.fire_conf_threshold,
+        "frame_sample_rate": perf_config.frame_sample_rate,
+        "min_frame_interval_ms": perf_config.min_frame_interval_ms,
+        "cache_enabled": perf_config.cache_enabled,
+        "cache_ttl_seconds": perf_config.cache_ttl_seconds,
+        "use_async": perf_config.use_async,
+        "max_concurrent_requests": perf_config.max_concurrent_requests
+    }
+
+
+@app.post("/performance/config")
+async def update_performance_config(
+    max_image_size: Optional[Tuple[int, int]] = None,
+    frame_sample_rate: Optional[int] = None,
+    min_frame_interval_ms: Optional[float] = None,
+    cache_enabled: Optional[bool] = None,
+    cache_ttl_seconds: Optional[float] = None
+):
+    """
+    Update performance configuration at runtime.
+    
+    Example:
+    {
+        "frame_sample_rate": 5,  # Process every 5th frame
+        "cache_enabled": true,
+        "min_frame_interval_ms": 1000  # Max 1 analysis per second
+    }
+    """
+    if max_image_size:
+        perf_config.max_image_size = max_image_size
+    if frame_sample_rate is not None:
+        perf_config.frame_sample_rate = max(1, frame_sample_rate)
+    if min_frame_interval_ms is not None:
+        perf_config.min_frame_interval_ms = max(100, min_frame_interval_ms)
+    if cache_enabled is not None:
+        perf_config.cache_enabled = cache_enabled
+    if cache_ttl_seconds is not None:
+        perf_config.cache_ttl_seconds = max(0.5, cache_ttl_seconds)
+        detection_cache.ttl = perf_config.cache_ttl_seconds
+    
+    logger.info(f"⚙️ Performance config updated: {perf_config}")
+    return await get_performance_config()
+
+
+@app.post("/performance/reset-cache")
+async def reset_detection_cache():
+    """Clear the detection cache"""
+    detection_cache.cache.clear()
+    detection_cache.hits = 0
+    detection_cache.misses = 0
+    return {"status": "Cache cleared", "stats": detection_cache.get_stats()}
+
 
 @app.post("/test_fire_detection")
 async def test_fire_detection(image: UploadFile = File(...)):
@@ -1388,13 +1570,97 @@ async def analyze_with_threshold(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def analyze_with_boxes(img) -> List[Dict[str, Any]]:
-    """Detect objects and return bounding boxes + tracking-ready info"""
+# ============================================================================
+# IMAGE PREPROCESSING FOR PERFORMANCE
+# ============================================================================
+def preprocess_image(img: Image.Image, target_size: Tuple[int, int] = None) -> Image.Image:
+    """
+    Preprocess image for faster detection.
+    - Resize large images to reduce processing time
+    - Skip if already small enough
+    """
+    if not PIL_AVAILABLE:
+        return img
+    
+    if target_size is None:
+        target_size = perf_config.max_image_size
+    
+    img_w, img_h = img.size
+    target_w, target_h = target_size
+    
+    # Skip if already optimal size
+    if img_w <= target_w and img_h <= target_h:
+        return img
+    
+    # Calculate scale to fit within target while maintaining aspect ratio
+    scale_w = target_w / img_w
+    scale_h = target_h / img_h
+    scale = min(scale_w, scale_h)
+    
+    new_w = int(img_w * scale)
+    new_h = int(img_h * scale)
+    
+    # Use fast resampling
+    try:
+        resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        return resized
+    except:
+        # Fallback for older PIL versions
+        return img.resize((new_w, new_h), Image.ANTIALIAS if hasattr(Image, 'ANTIALIAS') else Image.BILINEAR)
+
+def should_throttle_frame(stream_id: str = "default") -> bool:
+    """
+    Check if we should throttle analysis for this stream.
+    Returns True if we should skip this frame.
+    """
+    now = time.time()
+    last_time = frame_last_analysis.get(stream_id, 0)
+    
+    # Check if minimum interval has passed
+    elapsed_ms = (now - last_time) * 1000
+    if elapsed_ms < perf_config.min_frame_interval_ms:
+        return True
+    
+    # Update last analysis time
+    frame_last_analysis[stream_id] = now
+    return False
+
+# ============================================================================
+# OPTIMIZED DETECTION FUNCTIONS
+# ============================================================================
+def analyze_with_boxes(img, stream_id: str = None, skip_preprocessing: bool = False) -> List[Dict[str, Any]]:
+    """
+    Detect objects and return bounding boxes + tracking-ready info.
+    
+    Args:
+        img: PIL Image
+        stream_id: Optional stream ID for throttling
+        skip_preprocessing: If True, skip image resizing (for already-small images)
+    
+    Performance optimizations:
+    - Image preprocessing (resize large images)
+    - Result caching (avoid re-analyzing similar frames)
+    - Frame throttling for streams
+    """
     detections = []
     if not YOLO_AVAILABLE or not yolo_model:
         return detections
+    
     try:
-        results = yolo_model(img)
+        # Check cache first
+        cached_result = detection_cache.get(img)
+        if cached_result is not None:
+            return cached_result
+        
+        # Preprocess image for faster inference
+        if not skip_preprocessing and PIL_AVAILABLE:
+            original_size = img.size
+            img = preprocess_image(img)
+            if img.size != original_size:
+                logger.debug(f"📐 Resized image from {original_size} to {img.size}")
+        
+        # Run YOLO detection
+        results = yolo_model(img, verbose=False)  # Disable verbose logging for speed
         img_w, img_h = img.size if PIL_AVAILABLE else (640, 480)
         for r in results:
             if len(r.boxes) == 0:
@@ -1452,6 +1718,11 @@ def analyze_with_boxes(img) -> List[Dict[str, Any]]:
                     detections.append(fire_det)
         
         detections.sort(key=lambda x: x["weight"], reverse=True)
+        
+        # Cache the result
+        if detections:
+            detection_cache.set(img, detections)
+        
     except Exception as e:
         logger.error(f"Box detection error: {e}")
     return detections
@@ -1482,12 +1753,20 @@ async def analyze_with_bboxes(image: UploadFile = File(...)):
 @app.websocket("/stream_analyze")
 async def stream_analyze_ws(websocket: WebSocket):
     """
-    WebSocket endpoint for real-time frame analysis.
+    WebSocket endpoint for real-time frame analysis with performance optimization.
+    
+    Performance features:
+    - Frame throttling (skip frames if processing too fast)
+    - Result caching (avoid re-analyzing similar frames)
+    - Image preprocessing (resize large frames)
+    
     Client sends: { "streamId": "...", "frame": "<base64 jpeg>" }
     Server sends: { "streamId": "...", "detections": [...], "processing_time_ms": ... }
     """
     await websocket.accept()
     logger.info("🔌 WebSocket stream_analyze client connected")
+    frame_counter = 0
+    
     try:
         while True:
             raw = await websocket.receive_text()
@@ -1497,12 +1776,43 @@ async def stream_analyze_ws(websocket: WebSocket):
 
             if not frame_b64:
                 continue
+            
+            # Frame sampling: process every Nth frame
+            frame_counter += 1
+            if frame_counter % perf_config.frame_sample_rate != 0:
+                # Skip this frame but send empty result to keep connection alive
+                result = {
+                    "streamId": stream_id,
+                    "detections": [],
+                    "total": 0,
+                    "processing_time_ms": 0,
+                    "skipped": True,
+                    "timestamp": datetime.now().isoformat(),
+                    "ai_engine": "YOLOv8 (throttled)"
+                }
+                await websocket.send_text(json.dumps(result))
+                continue
+            
+            # Check throttling
+            if should_throttle_frame(stream_id):
+                # Frame throttled, skip analysis
+                result = {
+                    "streamId": stream_id,
+                    "detections": [],
+                    "total": 0,
+                    "processing_time_ms": 0,
+                    "throttled": True,
+                    "timestamp": datetime.now().isoformat(),
+                    "ai_engine": "YOLOv8 (throttled)"
+                }
+                await websocket.send_text(json.dumps(result))
+                continue
 
             t0 = time.time()
             try:
                 image_bytes = base64.b64decode(frame_b64)
                 img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-                detections = analyze_with_boxes(img)
+                detections = analyze_with_boxes(img, stream_id=stream_id)
             except Exception as e:
                 logger.warning(f"Frame decode error: {e}")
                 detections = []
@@ -1513,8 +1823,9 @@ async def stream_analyze_ws(websocket: WebSocket):
                 "detections": detections,
                 "total": len(detections),
                 "processing_time_ms": processing_time,
+                "cache_stats": detection_cache.get_stats(),
                 "timestamp": datetime.now().isoformat(),
-                "ai_engine": "YOLOv8"
+                "ai_engine": "YOLOv8 + Color Analysis"
             }
             await websocket.send_text(json.dumps(result))
 
@@ -1836,6 +2147,148 @@ async def reset_tracker():
     global ensemble_detector
     ensemble_detector = None
     return {"success": True, "message": "Tracker reset successfully"}
+
+
+# ============================================================================
+# CONFUSION MATRIX & PERFORMANCE EVALUATION ENDPOINTS
+# ============================================================================
+
+@app.get("/confusion_matrix")
+async def get_confusion_matrix():
+    """
+    Get complete confusion matrix and performance metrics
+    
+    Returns:
+    - Confusion matrix for object detection
+    - Binary classification metrics for alerts
+    - Per-class precision, recall, F1 scores
+    - Overall accuracy metrics
+    """
+    try:
+        return {
+            "success": True,
+            "object_detection": object_detection_tracker.get_confusion_matrix_visual(),
+            "alert_classification": alert_classification_tracker.calculate_metrics(),
+            "recent_alert_accuracy": alert_classification_tracker.get_recent_accuracy(50),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Confusion matrix error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/performance_metrics")
+async def get_performance_metrics():
+    """Get AI service performance report with all metrics"""
+    try:
+        report = get_performance_report()
+        report['service_status'] = {
+            'yolo_available': YOLO_AVAILABLE,
+            'opencv_available': CV2_AVAILABLE,
+            'numpy_available': NUMPY_AVAILABLE,
+            'pil_available': PIL_AVAILABLE
+        }
+        return report
+    except Exception as e:
+        logger.error(f"Performance metrics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/confusion_matrix/reset")
+async def reset_confusion_matrix():
+    """Reset all confusion matrix statistics (admin use)"""
+    try:
+        object_detection_tracker.reset()
+        alert_classification_tracker.reset()
+        return {
+            "success": True,
+            "message": "Confusion matrix reset successfully",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Reset error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/confusion_matrix/update_alert")
+async def update_alert_confusion(data: dict):
+    """
+    Update binary confusion matrix with ground truth label
+    
+    Request body:
+    {
+        "predicted_alert": true/false,
+        "actual_alert": true/false,
+        "confidence": 0.85,
+        "image_id": "optional_id"
+    }
+    """
+    try:
+        predicted = data.get('predicted_alert', False)
+        actual = data.get('actual_alert', False)
+        confidence = data.get('confidence', 0.0)
+        
+        alert_classification_tracker.update(predicted, actual, confidence)
+        
+        return {
+            "success": True,
+            "message": "Alert confusion matrix updated",
+            "current_metrics": alert_classification_tracker.calculate_metrics()
+        }
+    except Exception as e:
+        logger.error(f"Update error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/confusion_matrix/export")
+async def export_confusion_matrix():
+    """Export confusion matrix data to JSON file"""
+    try:
+        import os
+        export_dir = "exports"
+        if not os.path.exists(export_dir):
+            os.makedirs(export_dir)
+        
+        filename = f"confusion_matrix_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        filepath = os.path.join(export_dir, filename)
+        
+        object_detection_tracker.export_to_json(filepath)
+        
+        return {
+            "success": True,
+            "filepath": filepath,
+            "download_url": f"/exports/{filename}"
+        }
+    except Exception as e:
+        logger.error(f"Export error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/confusion_matrix/health")
+async def get_confusion_matrix_health():
+    """Get confusion matrix health and statistics summary"""
+    try:
+        obj_metrics = object_detection_tracker.calculate_metrics()
+        alert_metrics = alert_classification_tracker.calculate_metrics()
+        
+        return {
+            "success": True,
+            "object_detection": {
+                "total_classes": len(object_detection_tracker.class_names),
+                "total_samples": int(np.sum(object_detection_tracker.matrix)),
+                "overall_f1": obj_metrics['overall']['micro_f1']
+            },
+            "alert_classification": {
+                "total_analyzed": alert_metrics['total'],
+                "accuracy": alert_metrics['accuracy'],
+                "false_alarm_rate": alert_metrics['false_alarm_rate'],
+                "detection_rate": alert_metrics['detection_rate']
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

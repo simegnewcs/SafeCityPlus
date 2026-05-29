@@ -4,8 +4,9 @@ import SuperResponderSidebar from "../layout/SuperResponderSidebar";
 import {
   Play, RefreshCw, Camera,
   AlertTriangle, Eye, Video, Radio, WifiOff, X,
-  Circle, Users, MapPin, Cpu, Shield, Download,
-  AlertCircle, CheckCircle, Crosshair, Clock, ChevronDown, ChevronUp, BarChart2
+  Circle, Square, Users, MapPin, Cpu, Shield, Download,
+  AlertCircle, CheckCircle, Crosshair, Clock, ChevronDown, ChevronUp, BarChart2,
+  Film, ChevronLeft, ChevronRight
 } from "lucide-react";
 import axios from "axios";
 import io from 'socket.io-client';
@@ -159,6 +160,14 @@ const ResponderCCTV = () => {
   const [assigning, setAssigning] = useState(false);
   const [assignSuccess, setAssignSuccess] = useState(false);
 
+  // Role-based access control state
+  const [assignedIncidents, setAssignedIncidents] = useState([]);
+  const [accessibleStreamIds, setAccessibleStreamIds] = useState([]);
+  const [responderType, setResponderType] = useState(user?.responder_type || '');
+  const [showAssignmentPanel, setShowAssignmentPanel] = useState(true);
+  const [loadingAssignments, setLoadingAssignments] = useState(false);
+  const isSuperResponder = user?.role === 'SuperResponder' || user?.role === 'Admin';
+
   // Draggable AI panel
   const [aiPanelWidth, setAiPanelWidth] = useState(288);
   const isDraggingRef = useRef(false);
@@ -170,6 +179,160 @@ const ResponderCCTV = () => {
   const socketRef = useRef(null);
   const modalCanvasRef = useRef(null);
   const currentDetectionRef = useRef(null);
+
+  // Recording playback modal state
+  const [recPlayback, setRecPlayback]           = useState(null); // { recording, frames, frame, playing }
+  const [recPlaybackLoading, setRecPlaybackLoading] = useState(false);
+  const recPlayIntervalRef = useRef(null);
+
+  // Auto-recording state from backend
+  const [autoRecState, setAutoRecState] = useState(null); // { state, frameCount, maxFrames }
+  const autoRecStateRef = useRef(null);
+
+  // Manual recording
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingFrameCount, setRecordingFrameCount] = useState(0);
+  const recordingBufferRef = useRef([]);
+  const recordingIntervalRef = useRef(null);
+  const [recordingPreview, setRecordingPreview] = useState(null);
+  const previewIntervalRef = useRef(null);
+
+  /* ── Recording playback ── */
+  const openRecordingForIncident = async (incident) => {
+    // Try recording_id first (joined from DB), then search by stream_id
+    setRecPlaybackLoading(true);
+    try {
+      let recId = incident.recording_id || null;
+
+      if (!recId && incident.stream_id) {
+        // Search recordings list for matching stream_id
+        const listRes = await axios.get(`${API_URL}/super-responder/recordings`);
+        const recs = listRes.data?.recordings || [];
+        const match = recs.find(r => r.stream_id === incident.stream_id);
+        if (match) recId = match.id;
+      }
+
+      if (!recId) {
+        addAlert('⚠️ No recording found for this incident');
+        return;
+      }
+
+      const framesRes = await axios.get(`${API_URL}/super-responder/recordings/${recId}/frames`);
+      const { recording, frames } = framesRes.data;
+      if (!frames || frames.length === 0) {
+        addAlert('⚠️ Recording has no frames');
+        return;
+      }
+      setRecPlayback({ recording, frames, frame: 0, playing: false });
+    } catch (e) {
+      addAlert('Failed to load recording: ' + e.message);
+    } finally {
+      setRecPlaybackLoading(false);
+    }
+  };
+
+  const closeRecPlayback = () => {
+    clearInterval(recPlayIntervalRef.current);
+    setRecPlayback(null);
+  };
+
+  const toggleRecPlay = () => {
+    if (!recPlayback) return;
+    if (recPlayback.playing) {
+      clearInterval(recPlayIntervalRef.current);
+      setRecPlayback(p => ({ ...p, playing: false }));
+    } else {
+      recPlayIntervalRef.current = setInterval(() => {
+        setRecPlayback(p => {
+          if (!p) return p;
+          const next = p.frame + 1;
+          if (next >= p.frames.length) {
+            clearInterval(recPlayIntervalRef.current);
+            return { ...p, playing: false, frame: p.frames.length - 1 };
+          }
+          return { ...p, frame: next };
+        });
+      }, 120);
+      setRecPlayback(p => ({ ...p, playing: true }));
+    }
+  };
+
+  const startManualRecording = () => {
+    if (isRecording || !selectedStream) return;
+    recordingBufferRef.current = [];
+    setRecordingFrameCount(0);
+    setIsRecording(true);
+    addAlert('🔴 Recording started — press Stop to save');
+    recordingIntervalRef.current = setInterval(() => {
+      const canvas = modalCanvasRef.current;
+      if (!canvas) return;
+      try {
+        const b64 = canvas.toDataURL('image/jpeg', 0.75).replace(/^data:image\/\w+;base64,/, '');
+        recordingBufferRef.current.push({ frame: b64, timestamp: Date.now() });
+        setRecordingFrameCount(recordingBufferRef.current.length);
+      } catch {}
+    }, 300);
+  };
+
+  const stopManualRecording = () => {
+    if (!isRecording) return;
+    clearInterval(recordingIntervalRef.current);
+    setIsRecording(false);
+    const frames = [...recordingBufferRef.current];
+    recordingBufferRef.current = [];
+    setRecordingFrameCount(0);
+    console.log('🛑 stopManualRecording: frames captured =', frames.length, 'first frame size =', frames[0]?.frame?.length);
+    if (!frames.length) { addAlert('No frames captured — canvas may be unavailable'); return; }
+    setRecordingPreview({ frames, streamId: selectedStream?.streamId, cameraName: selectedStream?.cameraName, location: selectedStream?.location, previewFrame: 0, playing: false });
+    addAlert(`⏸ ${frames.length} frames captured — preview ready`);
+  };
+
+  const saveRecordingFromPreview = async () => {
+    if (!recordingPreview) return;
+    const { frames, streamId, cameraName, location } = recordingPreview;
+    clearInterval(previewIntervalRef.current);
+    setRecordingPreview(null);
+    addAlert(`⏳ Saving ${frames.length} frames…`);
+    try {
+      const res = await axios.post(`${API_URL}/super-responder/recordings/manual`, { streamId, cameraName, location, frames });
+      if (res.data?.success) {
+        addAlert(`✅ Saved! Go to Incidents page → 📹 Recordings tab to view it`);
+        try {
+          const incRes = await axios.get(`${API_URL}/super-responder/incidents?limit=200`);
+          const incidents = Array.isArray(incRes.data) ? incRes.data : [];
+          const match = incidents.find(i => i.stream_id && streamId && i.stream_id === streamId);
+          if (match) {
+            let types = match.assigned_to_types;
+            if (typeof types === 'string') try { types = JSON.parse(types); } catch { types = []; }
+            const isAssigned = Array.isArray(types) && types.length > 0;
+            if (isAssigned) {
+              addAlert(`✅ Incident #${match.id} is Assigned to: ${types.join(', ')}`);
+            } else {
+              addAlert(`⚠️ Incident #${match.id} exists but is NOT assigned — go to Incidents to assign`);
+            }
+          }
+        } catch {}
+      } else addAlert('Failed to save recording');
+    } catch (err) { addAlert('Failed to save: ' + err.message); }
+  };
+
+  const togglePreviewPlay = () => {
+    if (!recordingPreview) return;
+    if (recordingPreview.playing) {
+      clearInterval(previewIntervalRef.current);
+      setRecordingPreview(p => ({ ...p, playing: false }));
+    } else {
+      previewIntervalRef.current = setInterval(() => {
+        setRecordingPreview(p => {
+          if (!p) return p;
+          const next = p.previewFrame + 1;
+          if (next >= p.frames.length) { clearInterval(previewIntervalRef.current); return { ...p, playing: false, previewFrame: p.frames.length - 1 }; }
+          return { ...p, previewFrame: next };
+        });
+      }, 120);
+      setRecordingPreview(p => ({ ...p, playing: true }));
+    }
+  };
 
   // Draggable divider
   const onDividerMouseDown = (e) => {
@@ -232,6 +395,13 @@ const ResponderCCTV = () => {
       });
       ctx.fillStyle = 'rgba(0,0,0,0.04)';
       for (let i = 0; i < canvas.height; i += 4) ctx.fillRect(0, i, canvas.width, 2);
+      // Send annotated frame to backend buffer so auto-recording stores bboxes
+      if (autoRecStateRef.current?.state === 'recording' && socketRef.current?.connected && selectedStreamRef.current?.streamId) {
+        try {
+          const annotated = canvas.toDataURL('image/jpeg', 0.7).replace(/^data:image\/\w+;base64,/, '');
+          socketRef.current.emit('annotated-frame', { streamId: selectedStreamRef.current.streamId, frame: annotated });
+        } catch {}
+      }
     };
     img.src = `data:image/jpeg;base64,${base64Frame}`;
   }, []);
@@ -252,11 +422,22 @@ const ResponderCCTV = () => {
   useEffect(() => {
     fetchCameras();
     fetchAlerts();
+    fetchAssignedIncidents(); // Fetch role-based assignments first
     fetchLiveStreams();
     connectSocket();
-    const interval = setInterval(() => { fetchCameras(); fetchAlerts(); fetchLiveStreams(); }, 10000);
+    const interval = setInterval(() => { 
+      fetchCameras(); 
+      fetchAlerts(); 
+      fetchAssignedIncidents(); // Refresh assignments periodically
+      fetchLiveStreams(); 
+    }, 10000);
     return () => { clearInterval(interval); if (socketRef.current) socketRef.current.disconnect(); };
   }, []);
+  
+  // Re-fetch streams when accessibleStreamIds changes
+  useEffect(() => {
+    fetchLiveStreams();
+  }, [accessibleStreamIds]);
 
   const connectSocket = () => {
     try {
@@ -334,6 +515,15 @@ const ResponderCCTV = () => {
         setTimeout(() => setAiStatus(prev => prev === 'alert' ? 'active' : prev), 8000);
       });
 
+      // Auto-recording state from backend
+      socket.on('recording-state', ({ streamId, state, frameCount, maxFrames }) => {
+        if (selectedStreamRef.current?.streamId === streamId) {
+          const next = { state, frameCount: frameCount || 0, maxFrames: maxFrames || 20 };
+          autoRecStateRef.current = next;
+          setAutoRecState(next);
+        }
+      });
+
       socketRef.current = socket;
     } catch (error) {
       console.error('Socket.IO connection error:', error);
@@ -384,11 +574,55 @@ const ResponderCCTV = () => {
     }
   };
 
+  // Fetch incidents assigned to this responder type
+  const fetchAssignedIncidents = async () => {
+    if (!responderType && !isSuperResponder) return;
+    
+    setLoadingAssignments(true);
+    try {
+      // SuperResponder sees all active incidents
+      if (isSuperResponder) {
+        const response = await axios.get(`${API_URL}/super-responder/incidents?status=assigned,pending,pending_review,in_progress&limit=100`);
+        setAssignedIncidents(response.data?.incidents || []);
+        const streamIds = response.data?.incidents?.map(inc => inc.stream_id) || [];
+        setAccessibleStreamIds([...new Set(streamIds)]);
+      } else {
+        // Regular responder only sees their assigned incidents
+        const response = await axios.get(`${API_URL}/super-responder/my-incidents?responderType=${encodeURIComponent(responderType)}&limit=50`);
+        setAssignedIncidents(response.data?.incidents || []);
+        
+        // Fetch accessible streams for this responder type
+        const streamsResponse = await axios.get(`${API_URL}/super-responder/incident-streams?responderType=${encodeURIComponent(responderType)}`);
+        const streamIds = streamsResponse.data?.accessibleStreams?.map(s => s.stream_id) || [];
+        setAccessibleStreamIds(streamIds);
+      }
+    } catch (error) {
+      console.error('Error fetching assigned incidents:', error);
+    } finally {
+      setLoadingAssignments(false);
+    }
+  };
+
   const fetchLiveStreams = async () => {
     try {
       const response = await axios.get(`${API_URL}/streams`);
-      const data = response.data;
-      setLiveStreams(Array.isArray(data) ? data : []);
+      let data = response.data;
+      
+      if (Array.isArray(data)) {
+        // Filter streams based on role-based access control
+        if (!isSuperResponder && accessibleStreamIds.length > 0) {
+          // Only show streams that have assigned incidents for this responder
+          data = data.filter(stream => accessibleStreamIds.includes(stream.streamId));
+        } else if (!isSuperResponder && accessibleStreamIds.length === 0) {
+          // No assignments - show empty state (or demo mode)
+          data = [];
+        }
+        // SuperResponder sees all streams
+      } else {
+        data = [];
+      }
+      
+      setLiveStreams(data);
       setStats(prev => ({ ...prev, liveStreams: data.length }));
     } catch (error) {
       console.error('Error fetching live streams:', error);
@@ -431,12 +665,31 @@ const ResponderCCTV = () => {
     fetchLiveStreams();
   };
 
+  // Check if responder has access to a stream
+  const hasStreamAccess = (streamId) => {
+    if (isSuperResponder) return true; // SuperResponder can access all
+    if (accessibleStreamIds.length === 0) return false;
+    return accessibleStreamIds.includes(streamId);
+  };
+
+  // Get incident details for a stream
+  const getStreamIncident = (streamId) => {
+    return assignedIncidents.find(inc => inc.stream_id === streamId);
+  };
+
   const watchLiveStream = (stream) => {
+    // Role-based access control check
+    if (!hasStreamAccess(stream.streamId)) {
+      addAlert(`⛔ Access denied: This stream is not assigned to your responder type (${responderType})`, 'error');
+      return;
+    }
+    
     setSelectedStream(stream);
     selectedStreamRef.current = stream;
     setShowStreamModal(true);
     setCurrentDetection(null);
     currentDetectionRef.current = null;
+    setAutoRecState(null);
     setAiStatus('active');
     if (socketRef.current?.connected) socketRef.current.emit('join-stream', stream.streamId);
     setTimeout(() => {
@@ -658,33 +911,161 @@ const ResponderCCTV = () => {
             <div className="mb-6">
               <div className="flex items-center gap-2 mb-3">
                 <Radio className="w-4 h-4 text-red-500" />
-                <h2 className="text-base font-semibold text-zinc-900">Live Broadcasts</h2>
+                <h2 className="text-base font-semibold text-zinc-900">
+                  {isSuperResponder ? 'All Live Broadcasts' : 'Your Assigned Live Broadcasts'}
+                </h2>
                 <span className="bg-red-100 text-red-600 text-xs px-2 py-0.5 rounded-full">{activeLiveStreams} active</span>
+                {!isSuperResponder && responderType && (
+                  <span className="bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded-full">{responderType}</span>
+                )}
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {liveStreams.map((stream) => (
-                  <div key={stream.streamId} onClick={() => watchLiveStream(stream)}
-                    className="group bg-white rounded-2xl border-2 border-red-500 overflow-hidden shadow-lg hover:shadow-xl transition-all cursor-pointer hover:-translate-y-1">
-                    <div className="relative aspect-video bg-zinc-900 overflow-hidden">
-                      <img id={`video-${stream.streamId}`} className="w-full h-full object-cover absolute inset-0" style={{ display: streamFrames[stream.streamId] ? 'block' : 'none' }} alt="" />
-                      <div id={`placeholder-${stream.streamId}`} className="absolute inset-0 flex flex-col items-center justify-center" style={{ display: streamFrames[stream.streamId] ? 'none' : 'flex' }}>
-                        <Radio className="w-10 h-10 text-red-500 mb-2 animate-pulse" />
-                        <p className="text-white text-xs">Loading stream...</p>
-                      </div>
-                      <div className="absolute top-2 left-2 flex items-center gap-1.5 z-10">
-                        <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                        <span className="text-white text-xs font-bold bg-black/60 px-1.5 py-0.5 rounded">LIVE</span>
-                      </div>
-                      <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded flex items-center gap-1 z-10">
-                        <Eye className="w-3 h-3" />{stream.viewerCount || 0}
-                      </div>
-                    </div>
-                    <div className="p-3">
-                      <p className="font-semibold text-zinc-900 text-sm">{stream.cameraName}</p>
-                      <p className="text-xs text-zinc-500 mt-0.5 flex items-center gap-1"><MapPin className="w-3 h-3" />{stream.location}</p>
+              
+              {/* Assignment Required Notice */}
+              {!isSuperResponder && liveStreams.length === 0 && accessibleStreamIds.length === 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-medium text-amber-800">No Assigned Incidents</p>
+                      <p className="text-sm text-amber-600 mt-1">
+                        You currently have no assigned incidents. You will only be able to view CCTV streams 
+                        for incidents assigned to your responder type ({responderType || 'Not Set'}).
+                      </p>
                     </div>
                   </div>
-                ))}
+                </div>
+              )}
+              
+              <div className="flex gap-4">
+                {/* ── Left: stream cards ── */}
+                <div className="flex flex-col gap-4 w-72 flex-shrink-0">
+                  {liveStreams.map((stream) => {
+                    const incident = getStreamIncident(stream.streamId);
+                    return (
+                      <div key={stream.streamId} onClick={() => watchLiveStream(stream)}
+                        className={`group rounded-2xl border-2 overflow-hidden shadow-lg hover:shadow-xl transition-all cursor-pointer hover:-translate-y-1 ${
+                          incident ? 'border-red-500' : 'border-zinc-300'
+                        }`}>
+                        <div className="relative aspect-video bg-zinc-900 overflow-hidden">
+                          <img id={`video-${stream.streamId}`} className="w-full h-full object-cover absolute inset-0" style={{ display: streamFrames[stream.streamId] ? 'block' : 'none' }} alt="" />
+                          <div id={`placeholder-${stream.streamId}`} className="absolute inset-0 flex flex-col items-center justify-center" style={{ display: streamFrames[stream.streamId] ? 'none' : 'flex' }}>
+                            <Radio className="w-10 h-10 text-red-500 mb-2 animate-pulse" />
+                            <p className="text-white text-xs">Loading stream...</p>
+                          </div>
+                          <div className="absolute top-2 left-2 flex items-center gap-1.5 z-10">
+                            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                            <span className="text-white text-xs font-bold bg-black/60 px-1.5 py-0.5 rounded">LIVE</span>
+                          </div>
+                          <div className="absolute top-2 right-2 bg-black/60 text-white text-xs px-1.5 py-0.5 rounded flex items-center gap-1 z-10">
+                            <Eye className="w-3 h-3" />{stream.viewerCount || 0}
+                          </div>
+                          {incident && (
+                            <div className="absolute bottom-2 left-2 right-2 z-10">
+                              <div className="bg-black/80 backdrop-blur-sm rounded-lg p-2 text-white">
+                                <div className="flex items-center gap-1.5 mb-1">
+                                  <span className={`w-2 h-2 rounded-full ${
+                                    incident.priority_score >= 80 ? 'bg-red-500' :
+                                    incident.priority_score >= 60 ? 'bg-orange-500' :
+                                    incident.priority_score >= 40 ? 'bg-yellow-500' : 'bg-blue-500'
+                                  }`} />
+                                  <span className="text-[10px] font-bold uppercase">
+                                    {incident.severity} · Score: {incident.priority_score}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] leading-tight line-clamp-2">{incident.decision}</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-3 bg-white">
+                          <p className="font-semibold text-zinc-900 text-sm">{stream.cameraName}</p>
+                          <p className="text-xs text-zinc-500 mt-0.5 flex items-center gap-1">
+                            <MapPin className="w-3 h-3" />{stream.location}
+                          </p>
+                          {incident && incident.assigned_to_types && (
+                            <div className="mt-2 pt-2 border-t border-zinc-100 flex flex-wrap gap-1">
+                              {(typeof incident.assigned_to_types === 'string'
+                                ? JSON.parse(incident.assigned_to_types)
+                                : incident.assigned_to_types
+                              ).map((type, idx) => (
+                                <span key={idx} className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">{type}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* ── Right: incident location map panel ── */}
+                <div className="flex-1 min-w-0">
+                  {(() => {
+                    // Show map for the first stream that has an incident with a location
+                    const streamWithIncident = liveStreams.find(s => {
+                      const inc = getStreamIncident(s.streamId);
+                      return inc && inc.location && inc.location !== 'Unknown';
+                    });
+                    const activeIncident = streamWithIncident ? getStreamIncident(streamWithIncident.streamId) : null;
+                    const locationStr = activeIncident?.location || liveStreams[0]?.location;
+
+                    return (
+                      <div className="bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden h-full flex flex-col">
+                        {/* Panel header */}
+                        <div className="px-4 py-3 border-b border-zinc-100 flex items-center gap-2 flex-shrink-0">
+                          <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                          <span className="text-sm font-semibold text-zinc-900">Incident Location</span>
+                          {activeIncident && (
+                            <span className={`ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                              activeIncident.priority_score >= 80 ? 'bg-red-50 border-red-300 text-red-600' :
+                              activeIncident.priority_score >= 60 ? 'bg-orange-50 border-orange-300 text-orange-600' :
+                              'bg-yellow-50 border-yellow-300 text-yellow-600'
+                            }`}>
+                              {activeIncident.severity?.toUpperCase()} · #{activeIncident.id}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Map */}
+                        {locationStr && locationStr !== 'Unknown' ? (
+                          <>
+                            <div className="flex-1 min-h-0">
+                              <StreamLocationMap locationStr={locationStr} />
+                            </div>
+                            {/* Incident detail below map */}
+                            {activeIncident && (
+                              <div className="px-4 py-3 border-t border-zinc-100 space-y-2 flex-shrink-0">
+                                <div className="flex items-start gap-2">
+                                  <Shield className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-bold text-zinc-900 line-clamp-2">{activeIncident.decision}</p>
+                                    <p className="text-[10px] text-zinc-500 mt-0.5">{activeIncident.incident_category}</p>
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="bg-zinc-50 rounded-lg p-2">
+                                    <p className="text-[9px] text-zinc-500 uppercase">Priority Score</p>
+                                    <p className="text-base font-bold text-zinc-900">{activeIncident.priority_score}/100</p>
+                                  </div>
+                                  <div className="bg-zinc-50 rounded-lg p-2">
+                                    <p className="text-[9px] text-zinc-500 uppercase">AI Confidence</p>
+                                    <p className="text-base font-bold text-zinc-900">{activeIncident.ai_confidence}%</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="flex-1 flex flex-col items-center justify-center text-zinc-400 gap-3 p-8">
+                            <MapPin className="w-10 h-10 opacity-30" />
+                            <p className="text-sm font-medium">No location data available</p>
+                            <p className="text-xs text-zinc-400">Location will appear when the stream reports GPS coordinates</p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
               </div>
             </div>
           )}
@@ -698,6 +1079,159 @@ const ResponderCCTV = () => {
             </div>
             <span className="text-xs text-zinc-400 font-mono">{isConnected ? '🟢 Connected' : '🔴 Disconnected'} · {new Date().toLocaleTimeString()}</span>
           </div>
+
+          {/* Assigned Incidents Panel */}
+          {assignedIncidents.length > 0 && (
+            <div className="mb-6 bg-white rounded-2xl border border-zinc-200 shadow-sm overflow-hidden">
+              <div 
+                className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-slate-50 to-white border-b border-zinc-100 cursor-pointer hover:bg-slate-50 transition-colors"
+                onClick={() => setShowAssignmentPanel(!showAssignmentPanel)}
+              >
+                <div className="flex items-center gap-3">
+                  <Shield className="w-5 h-5 text-blue-600" />
+                  <h3 className="font-semibold text-zinc-900">
+                    {isSuperResponder ? 'All Active Incidents' : 'Your Assigned Incidents'}
+                  </h3>
+                  <span className="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full">
+                    {assignedIncidents.length} active
+                  </span>
+                  {loadingAssignments && (
+                    <RefreshCw className="w-4 h-4 text-zinc-400 animate-spin" />
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {!isSuperResponder && responderType && (
+                    <span className="text-xs text-zinc-500">{responderType}</span>
+                  )}
+                  {showAssignmentPanel ? <ChevronUp className="w-5 h-5 text-zinc-400" /> : <ChevronDown className="w-5 h-5 text-zinc-400" />}
+                </div>
+              </div>
+              
+              {showAssignmentPanel && (
+                <div className="p-4">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {assignedIncidents.slice(0, 6).map((incident) => (
+                      <div key={incident.id} className="border border-zinc-200 rounded-xl p-4 hover:shadow-md transition-shadow bg-white">
+                        {/* Header with Priority */}
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-3 h-3 rounded-full ${
+                              incident.priority_score >= 80 ? 'bg-red-500 animate-pulse' :
+                              incident.priority_score >= 60 ? 'bg-orange-500' :
+                              incident.priority_score >= 40 ? 'bg-yellow-500' : 'bg-blue-500'
+                            }`} />
+                            <span className={`text-xs font-bold uppercase ${
+                              incident.priority_score >= 80 ? 'text-red-600' :
+                              incident.priority_score >= 60 ? 'text-orange-600' :
+                              incident.priority_score >= 40 ? 'text-yellow-600' : 'text-blue-600'
+                            }`}>
+                              {incident.severity}
+                            </span>
+                          </div>
+                          <span className="text-xs font-mono text-zinc-400">
+                            #{incident.id}
+                          </span>
+                        </div>
+                        
+                        {/* Location Map — shown first, prominent */}
+                        {incident.location && incident.location !== 'Unknown' && (
+                          <div className="mb-3 -mx-4 -mt-1">
+                            <StreamLocationMap locationStr={incident.location} />
+                          </div>
+                        )}
+
+                        {/* Incident Details */}
+                        <h4 className="font-medium text-zinc-900 text-sm mb-1 line-clamp-2">
+                          {incident.decision}
+                        </h4>
+                        <p className="text-xs text-zinc-500 mb-2">{incident.incident_category}</p>
+
+                        {/* Scores */}
+                        <div className="grid grid-cols-2 gap-2 mb-3">
+                          <div className="bg-zinc-50 rounded-lg p-2">
+                            <p className="text-[10px] text-zinc-500 uppercase">Priority Score</p>
+                            <p className="text-lg font-bold text-zinc-900">{incident.priority_score}/100</p>
+                          </div>
+                          <div className="bg-zinc-50 rounded-lg p-2">
+                            <p className="text-[10px] text-zinc-500 uppercase">AI Confidence</p>
+                            <p className="text-lg font-bold text-zinc-900">{incident.ai_confidence}%</p>
+                          </div>
+                        </div>
+                        
+                        {/* Assigned Teams */}
+                        <div className="mb-3">
+                          <p className="text-[10px] text-zinc-500 uppercase mb-1">Assigned Teams</p>
+                          <div className="flex flex-wrap gap-1">
+                            {(typeof incident.assigned_to_types === 'string' 
+                              ? JSON.parse(incident.assigned_to_types) 
+                              : incident.assigned_to_types || []
+                            ).map((type, idx) => (
+                              <span key={idx} className={`text-[10px] px-2 py-1 rounded ${
+                                type === responderType ? 'bg-blue-100 text-blue-700 font-medium' : 'bg-zinc-100 text-zinc-600'
+                              }`}>
+                                {type}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        
+                        {/* Status & Actions */}
+                        <div className="flex items-center justify-between pt-2 border-t border-zinc-100">
+                          <span className={`text-[10px] px-2 py-1 rounded-full ${
+                            incident.status === 'assigned' ? 'bg-emerald-100 text-emerald-700' :
+                            incident.status === 'pending_review' ? 'bg-amber-100 text-amber-700' :
+                            'bg-zinc-100 text-zinc-600'
+                          }`}>
+                            {incident.status === 'pending_review' ? '⚠️ Needs Review' : incident.status}
+                          </span>
+                          
+                          <div className="flex items-center gap-1.5">
+                            {/* Video recording button */}
+                            <button
+                              onClick={() => openRecordingForIncident(incident)}
+                              disabled={recPlaybackLoading}
+                              title="Play saved recording"
+                              className="text-xs bg-purple-50 text-purple-600 px-2.5 py-1.5 rounded-lg hover:bg-purple-100 transition-colors flex items-center gap-1 disabled:opacity-40"
+                            >
+                              {recPlaybackLoading ? (
+                                <RefreshCw className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Film className="w-3 h-3" />
+                              )}
+                              Video
+                            </button>
+
+                            {incident.stream_id && accessibleStreamIds.includes(incident.stream_id) && (
+                              <button 
+                                onClick={() => {
+                                  const stream = liveStreams.find(s => s.streamId === incident.stream_id);
+                                  if (stream) watchLiveStream(stream);
+                                }}
+                                className="text-xs bg-red-50 text-red-600 px-2.5 py-1.5 rounded-lg hover:bg-red-100 transition-colors flex items-center gap-1"
+                              >
+                                <Radio className="w-3 h-3" /> Stream
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {assignedIncidents.length > 6 && (
+                    <div className="mt-4 text-center">
+                      <button 
+                        onClick={() => setShowAssignmentPanel(false)}
+                        className="text-sm text-zinc-500 hover:text-zinc-700 transition-colors"
+                      >
+                        And {assignedIncidents.length - 6} more incidents... (click header to collapse)
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Camera grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
@@ -932,6 +1466,40 @@ const ResponderCCTV = () => {
                 </div>
               )}
 
+              {/* Auto-recording status bar */}
+              {autoRecState && (
+                <div className="px-4 py-2 border-t border-slate-700 bg-slate-900/60 flex-shrink-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`text-[10px] font-bold flex items-center gap-1.5 ${
+                      autoRecState.state === 'recording' ? 'text-red-400' :
+                      autoRecState.state === 'awaiting' ? 'text-yellow-400' :
+                      autoRecState.state === 'saved' ? 'text-emerald-400' :
+                      'text-slate-500'
+                    }`}>
+                      {autoRecState.state === 'recording' && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block" />}
+                      {autoRecState.state === 'recording' ? `Auto-Recording: ${autoRecState.frameCount}/${autoRecState.maxFrames} frames` :
+                       autoRecState.state === 'awaiting' ? '⏸ Buffer full — Assign to save recording' :
+                       autoRecState.state === 'saved' ? '✅ Recording saved to incident' :
+                       autoRecState.state === 'discarded' ? '🗑 Recording discarded (not assigned)' : ''}
+                    </span>
+                    <span className="text-[9px] text-slate-500">
+                      {autoRecState.state === 'recording' ? `~${Math.round((autoRecState.frameCount / autoRecState.maxFrames) * 20)}s / 20s` : ''}
+                    </span>
+                  </div>
+                  {autoRecState.state === 'recording' && (
+                    <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-red-500 transition-all duration-300 rounded-full"
+                        style={{ width: `${Math.min(100, (autoRecState.frameCount / autoRecState.maxFrames) * 100)}%` }}
+                      />
+                    </div>
+                  )}
+                  {autoRecState.state === 'awaiting' && (
+                    <div className="w-full h-1.5 bg-yellow-700/50 rounded-full" />
+                  )}
+                </div>
+              )}
+
               {/* Action bar */}
               <div className="px-4 py-3 border-t border-slate-700 flex gap-2 flex-shrink-0 bg-slate-800/80">
                 <button
@@ -953,6 +1521,25 @@ const ResponderCCTV = () => {
                 <button onClick={saveVideoClip} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors flex items-center justify-center gap-1.5">
                   <Download size={13} /> Save Clip
                 </button>
+                <div className={`flex-1 py-2 border rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 ${
+                  !autoRecState || autoRecState.state === 'discarded'
+                    ? 'bg-slate-800 border-slate-700 text-slate-500'
+                    : autoRecState.state === 'recording'
+                      ? 'bg-red-900/40 border-red-700/60 text-red-300'
+                      : autoRecState.state === 'awaiting'
+                        ? 'bg-yellow-900/40 border-yellow-700/60 text-yellow-300'
+                        : 'bg-emerald-900/40 border-emerald-700/60 text-emerald-300'
+                }`}>
+                  {!autoRecState || autoRecState.state === 'discarded' ? (
+                    <><Circle size={10} className="text-slate-600" /> No Buffer</>
+                  ) : autoRecState.state === 'recording' ? (
+                    <><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block" /> {autoRecState.frameCount}/{autoRecState.maxFrames}f</>
+                  ) : autoRecState.state === 'awaiting' ? (
+                    <><span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" /> Buffer Ready</>
+                  ) : (
+                    <><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> Saved</>
+                  )}
+                </div>
                 <button onClick={closeStreamModal} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors">Close</button>
               </div>
             </div>
@@ -1060,6 +1647,146 @@ const ResponderCCTV = () => {
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Incident Recording Playback Modal ───────────────────────── */}
+      {recPlayback && (
+        <div className="fixed inset-0 bg-black/85 flex items-center justify-center z-[100] p-4"
+          onClick={closeRecPlayback}>
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl"
+            onClick={e => e.stopPropagation()}>
+
+            {/* Header */}
+            <div className="px-5 py-3 border-b border-slate-700 flex items-center gap-3 bg-slate-800/80">
+              <div className="w-8 h-8 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center flex-shrink-0">
+                <Film size={14} className="text-purple-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-white font-bold text-sm">{recPlayback.recording?.camera_name || 'Recording'}</p>
+                <p className="text-slate-400 text-[10px] mt-0.5">
+                  {recPlayback.frames.length} frames
+                  {recPlayback.recording?.location ? ` · ${recPlayback.recording.location}` : ''}
+                  {recPlayback.recording?.created_at ? ` · ${new Date(recPlayback.recording.created_at).toLocaleString()}` : ''}
+                </p>
+              </div>
+              <button onClick={closeRecPlayback}
+                className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-500 hover:text-white hover:bg-slate-700 transition-colors">
+                <X size={14} />
+              </button>
+            </div>
+
+            {/* Frame viewer */}
+            <div className="relative bg-black aspect-video">
+              <img
+                src={`http://localhost:5000${recPlayback.frames[recPlayback.frame]}`}
+                alt={`Frame ${recPlayback.frame + 1}`}
+                className="w-full h-full object-contain"
+              />
+              {/* Overlay: frame counter */}
+              <div className="absolute top-2 right-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-full font-mono">
+                {recPlayback.frame + 1} / {recPlayback.frames.length}
+              </div>
+              {/* Overlay: playing indicator */}
+              {recPlayback.playing && (
+                <div className="absolute bottom-3 left-3 flex items-center gap-1.5 bg-red-600/80 backdrop-blur px-2.5 py-1 rounded-full">
+                  <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                  <span className="text-white text-[10px] font-bold">PLAYING</span>
+                </div>
+              )}
+              {/* Prev/Next frame buttons */}
+              <button
+                onClick={() => { clearInterval(recPlayIntervalRef.current); setRecPlayback(p => ({ ...p, frame: Math.max(0, p.frame - 1), playing: false })); }}
+                disabled={recPlayback.frame === 0}
+                className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-black/50 rounded-full flex items-center justify-center text-white hover:bg-black/70 transition-colors disabled:opacity-20">
+                <ChevronLeft size={16} />
+              </button>
+              <button
+                onClick={() => { clearInterval(recPlayIntervalRef.current); setRecPlayback(p => ({ ...p, frame: Math.min(p.frames.length - 1, p.frame + 1), playing: false })); }}
+                disabled={recPlayback.frame === recPlayback.frames.length - 1}
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-black/50 rounded-full flex items-center justify-center text-white hover:bg-black/70 transition-colors disabled:opacity-20">
+                <ChevronRight size={16} />
+              </button>
+            </div>
+
+            {/* Controls */}
+            <div className="px-5 py-4 space-y-3 bg-slate-900">
+              {/* Scrubber */}
+              <input
+                type="range" min={0} max={recPlayback.frames.length - 1} value={recPlayback.frame}
+                onChange={e => { clearInterval(recPlayIntervalRef.current); setRecPlayback(p => ({ ...p, frame: parseInt(e.target.value), playing: false })); }}
+                className="w-full accent-purple-500 cursor-pointer h-1.5"
+              />
+              {/* Buttons */}
+              <div className="flex items-center gap-2">
+                <button onClick={toggleRecPlay}
+                  className={`flex-1 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors ${
+                    recPlayback.playing
+                      ? 'bg-yellow-600 hover:bg-yellow-500 text-white'
+                      : 'bg-purple-600 hover:bg-purple-500 text-white'
+                  }`}>
+                  {recPlayback.playing ? '⏸ Pause' : <><Play size={12} /> Play</>}
+                </button>
+                <button
+                  onClick={() => { clearInterval(recPlayIntervalRef.current); setRecPlayback(p => ({ ...p, frame: 0, playing: false })); }}
+                  className="px-4 py-2.5 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-semibold hover:bg-slate-600 transition-colors">
+                  ↩ Restart
+                </button>
+                <button onClick={closeRecPlayback}
+                  className="px-4 py-2.5 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-semibold hover:bg-slate-600 transition-colors">
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Recording Preview Modal ─────────────────────────────────── */}
+      {recordingPreview?._show && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[200] p-4"
+          onClick={() => { clearInterval(previewIntervalRef.current); setRecordingPreview(p => ({ ...p, _show: false, playing: false })); }}>
+          <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-xl overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700">
+              <div>
+                <h2 className="text-white font-bold text-sm flex items-center gap-2"><Video size={14} className="text-purple-400" /> Recording Preview</h2>
+                <p className="text-slate-400 text-[10px] mt-0.5">{recordingPreview.frames.length} frames · {recordingPreview.cameraName || 'Unknown camera'}</p>
+              </div>
+              <button onClick={() => { clearInterval(previewIntervalRef.current); setRecordingPreview(p => ({ ...p, _show: false, playing: false })); }}
+                className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-700 transition-all"><X size={15} /></button>
+            </div>
+            <div className="relative bg-black aspect-video flex items-center justify-center">
+              <img
+                src={`data:image/jpeg;base64,${recordingPreview.frames[recordingPreview.previewFrame]?.frame}`}
+                alt={`Frame ${recordingPreview.previewFrame + 1}`}
+                className="max-h-full max-w-full object-contain"
+              />
+              <div className="absolute top-2 right-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-full">
+                {recordingPreview.previewFrame + 1} / {recordingPreview.frames.length}
+              </div>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <input type="range" min={0} max={recordingPreview.frames.length - 1} value={recordingPreview.previewFrame}
+                onChange={e => { clearInterval(previewIntervalRef.current); setRecordingPreview(p => ({ ...p, previewFrame: parseInt(e.target.value), playing: false })); }}
+                className="w-full accent-purple-500 cursor-pointer" />
+              <div className="flex items-center justify-center gap-3">
+                <button onClick={togglePreviewPlay}
+                  className={`px-5 py-1.5 text-xs font-bold rounded-lg transition-all ${ recordingPreview.playing ? 'bg-yellow-600 hover:bg-yellow-500 text-white' : 'bg-purple-600 hover:bg-purple-500 text-white'}`}>
+                  {recordingPreview.playing ? '⏸ Pause' : '▶ Play'}
+                </button>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button onClick={saveRecordingFromPreview}
+                  className="flex-1 py-2 bg-emerald-700 hover:bg-emerald-600 border border-emerald-600 text-white rounded-xl text-xs font-bold transition-all">
+                  ✅ Save Recording
+                </button>
+                <button onClick={() => { clearInterval(previewIntervalRef.current); setRecordingPreview(null); }}
+                  className="flex-1 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold transition-all">
+                  🗑 Discard
+                </button>
               </div>
             </div>
           </div>

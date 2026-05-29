@@ -20,8 +20,27 @@ const Login = () => {
         try {
             const res = await axios.post('http://localhost:5000/api/auth/login', formData);
             if (res.data.success) {
-                localStorage.setItem('user', JSON.stringify(res.data.user));
-                const role = res.data.user.role;
+                // Fetch full profile to ensure responder_type and all fields are present
+                let userData = res.data.user;
+                try {
+                    const profileRes = await axios.get(`http://localhost:5000/api/users/${userData.id}`);
+                    if (profileRes.data?.id) {
+                        userData = {
+                            ...userData,
+                            responder_type: profileRes.data.responder_type || userData.responder_type || null,
+                            full_name: profileRes.data.full_name || userData.fullName,
+                        };
+                    }
+                } catch {}
+                localStorage.setItem('user', JSON.stringify(userData));
+                const { role, password_changed } = userData;
+
+                // Force password change on first login (password_changed === false)
+                if (password_changed === false) {
+                    window.location.href = '/change-password';
+                    return;
+                }
+
                 if (role === 'Admin') window.location.href = '/admin/dashboard';
                 else if (role === 'SuperResponder') window.location.href = '/super-responder/dashboard';
                 else if (role === 'Responder') window.location.href = '/responder/dashboard';

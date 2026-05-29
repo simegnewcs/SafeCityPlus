@@ -9,6 +9,7 @@ import {
 
 // Auth Pages
 import Login from "./auth/Login";
+import ForceChangePassword from "./auth/ForceChangePassword";
 
 // Landing Page
 import HomePage from "./pages/HomePage";
@@ -45,6 +46,7 @@ function App() {
         {/* ================= AUTH ================= */}
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Navigate to="/login" />} />
+        <Route path="/change-password" element={<ForceChangePassword />} />
 
         {/* 🔥 Redirect old admin route */}
         <Route

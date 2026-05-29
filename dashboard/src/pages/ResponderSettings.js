@@ -20,7 +20,9 @@ const ResponderSettings = () => {
   const [fullName, setFullName] = useState(user?.full_name || user?.fullName || "");
   const [phone, setPhone] = useState(user?.phone || "");
   const [email, setEmail] = useState(user?.email || "");
+  const [oldPassword, setOldPassword] = useState("");
   const [password, setPassword] = useState("");
+  const [showOldPassword, setShowOldPassword] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -68,6 +70,10 @@ const ResponderSettings = () => {
         phone,
         email,
         ...(password && { password }),
+        ...(oldPassword && { oldPassword }),
+        // Add requester info for backend to identify self-update
+        requesterRole: user.role,
+        requesterId: user.id,
       };
       await axios.put(`${API_URL}/users/${user.id}`, updateData);
 
@@ -76,6 +82,7 @@ const ResponderSettings = () => {
       localStorage.setItem("user", JSON.stringify(updatedUser));
 
       showMessage("Profile updated successfully!", "success");
+      setOldPassword("");
       setPassword("");
     } catch (error) {
       console.error(error);
@@ -224,14 +231,37 @@ const ResponderSettings = () => {
                 </div>
               </div>
 
+              {/* Old Password */}
               <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-zinc-700 mb-1.5">New Password (optional)</label>
+                <label className="block text-sm font-medium text-zinc-700 mb-1.5">Old Password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={18} />
+                  <input
+                    type={showOldPassword ? "text" : "password"}
+                    className="w-full pl-10 pr-10 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-blue-400 focus:ring-1 focus:ring-blue-400 outline-none transition-all"
+                    placeholder="Enter your current password"
+                    value={oldPassword}
+                    onChange={(e) => setOldPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowOldPassword(!showOldPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                  >
+                    {showOldPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </div>
+
+              {/* New Password */}
+              <div className="md:col-span-2">
+                <label className="block text-sm font-medium text-zinc-700 mb-1.5">New Password</label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={18} />
                   <input
                     type={showPassword ? "text" : "password"}
                     className="w-full pl-10 pr-10 py-2.5 bg-zinc-50 border border-zinc-200 rounded-xl focus:border-blue-400 focus:ring-1 focus:ring-blue-400 outline-none transition-all"
-                    placeholder="Leave blank to keep current password"
+                    placeholder="Enter new password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                   />

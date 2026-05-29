@@ -3,9 +3,9 @@ import AdminSidebar from "../layout/AdminSidebar";
 import {
   Play, Maximize2, RefreshCw, Camera,
   AlertTriangle, Eye, Radio, WifiOff, X,
-  Circle, MapPin, Cpu, Zap, Shield, Activity,
+  Circle, Square, MapPin, Cpu, Zap, Shield, Activity,
   TrendingUp, Clock, ChevronDown, ChevronUp, Download,
-  AlertCircle, CheckCircle, Crosshair, BarChart2
+  AlertCircle, CheckCircle, Crosshair, BarChart2, Video
 } from "lucide-react";
 import axios from "axios";
 import io from 'socket.io-client';
@@ -564,6 +564,97 @@ const AdminCCTV = () => {
   const socketRef = useRef(null);
   const modalCanvasRef = useRef(null);
   const currentDetectionRef = useRef(null); // always-current bbox data for canvas draw
+
+  // Manual recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingFrameCount, setRecordingFrameCount] = useState(0);
+  const recordingBufferRef = useRef([]);
+  const recordingIntervalRef = useRef(null);
+  const [recordingPreview, setRecordingPreview] = useState(null); // { frames, streamId, cameraName, location, previewFrame, playing }
+  const previewIntervalRef = useRef(null);
+
+  const startManualRecording = () => {
+    if (isRecording || !selectedStream) return;
+    recordingBufferRef.current = [];
+    setRecordingFrameCount(0);
+    setIsRecording(true);
+    addAlert('🔴 Recording started — press Stop to save');
+    recordingIntervalRef.current = setInterval(() => {
+      const canvas = modalCanvasRef.current;
+      if (!canvas) return;
+      try {
+        const b64 = canvas.toDataURL('image/jpeg', 0.75).replace(/^data:image\/\w+;base64,/, '');
+        recordingBufferRef.current.push({ frame: b64, timestamp: Date.now() });
+        setRecordingFrameCount(recordingBufferRef.current.length);
+      } catch {}
+    }, 300);
+  };
+
+  const stopManualRecording = () => {
+    if (!isRecording) return;
+    clearInterval(recordingIntervalRef.current);
+    setIsRecording(false);
+    const frames = [...recordingBufferRef.current];
+    recordingBufferRef.current = [];
+    setRecordingFrameCount(0);
+    console.log('🛑 stopManualRecording: frames captured =', frames.length, 'first frame size =', frames[0]?.frame?.length);
+    if (!frames.length) { addAlert('No frames captured — canvas may be unavailable'); return; }
+    // Store for preview instead of auto-saving
+    setRecordingPreview({ frames, streamId: selectedStream?.streamId, cameraName: selectedStream?.cameraName, location: selectedStream?.location, previewFrame: 0, playing: false });
+    addAlert(`⏸ ${frames.length} frames captured — preview ready`);
+  };
+
+  const saveRecordingFromPreview = async () => {
+    if (!recordingPreview) return;
+    const { frames, streamId, cameraName, location } = recordingPreview;
+    clearInterval(previewIntervalRef.current);
+    setRecordingPreview(null);
+    addAlert(`⏳ Saving ${frames.length} frames…`);
+    try {
+      const res = await axios.post(`${API_URL}/super-responder/recordings/manual`, { streamId, cameraName, location, frames });
+      if (res.data?.success) {
+        addAlert(`✅ Saved! Go to Incidents page → 📹 Recordings tab to view it`);
+        // Check incident assignment status for this stream
+        try {
+          const incRes = await axios.get(`${API_URL}/super-responder/incidents?limit=200`);
+          const incidents = Array.isArray(incRes.data) ? incRes.data : [];
+          const match = incidents.find(i => i.stream_id && streamId && i.stream_id === streamId);
+          if (match) {
+            let types = match.assigned_to_types;
+            if (typeof types === 'string') try { types = JSON.parse(types); } catch { types = []; }
+            const isAssigned = Array.isArray(types) && types.length > 0;
+            if (isAssigned) {
+              addAlert(`✅ Incident #${match.id} is Assigned to: ${types.join(', ')}`);
+            } else {
+              addAlert(`⚠️ Incident #${match.id} exists but is NOT assigned — go to Incidents to assign`);
+            }
+          }
+        } catch {}
+      } else {
+        addAlert('Failed to save recording');
+      }
+    } catch (err) {
+      addAlert('Failed to save: ' + err.message);
+    }
+  };
+
+  const togglePreviewPlay = () => {
+    if (!recordingPreview) return;
+    if (recordingPreview.playing) {
+      clearInterval(previewIntervalRef.current);
+      setRecordingPreview(p => ({ ...p, playing: false }));
+    } else {
+      previewIntervalRef.current = setInterval(() => {
+        setRecordingPreview(p => {
+          if (!p) return p;
+          const next = p.previewFrame + 1;
+          if (next >= p.frames.length) { clearInterval(previewIntervalRef.current); return { ...p, playing: false, previewFrame: p.frames.length - 1 }; }
+          return { ...p, previewFrame: next };
+        });
+      }, 120);
+      setRecordingPreview(p => ({ ...p, playing: true }));
+    }
+  };
 
   // Draggable panel divider
   const [aiPanelWidth, setAiPanelWidth] = useState(288); // default 288px (lg:w-72)
@@ -1669,6 +1760,23 @@ const AdminCCTV = () => {
                 <button onClick={saveVideoClip} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors flex items-center justify-center gap-1.5">
                   <Download size={13} /> Save Clip
                 </button>
+                {recordingPreview ? (
+                  <button onClick={() => setRecordingPreview(p => ({ ...p, _show: true }))}
+                    className="flex-1 py-2 bg-purple-700 border border-purple-500 text-white rounded-xl text-xs font-bold hover:bg-purple-600 transition-colors flex items-center justify-center gap-1.5">
+                    <Video size={11} /> Preview ({recordingPreview.frames.length}f)
+                  </button>
+                ) : !isRecording ? (
+                  <button onClick={startManualRecording}
+                    className="flex-1 py-2 bg-red-700/80 border border-red-600 text-white rounded-xl text-xs font-bold hover:bg-red-600 transition-colors flex items-center justify-center gap-1.5 animate-none">
+                    <Circle size={11} className="fill-red-400 text-red-400" /> Record
+                  </button>
+                ) : (
+                  <button onClick={stopManualRecording}
+                    className="flex-1 py-2 bg-red-600 border border-red-400 text-white rounded-xl text-xs font-bold hover:bg-red-500 transition-colors flex items-center justify-center gap-1.5">
+                    <Square size={11} className="fill-white text-white" />
+                    <span className="animate-pulse">⏹ Stop · {recordingFrameCount}f</span>
+                  </button>
+                )}
                 <button onClick={closeStreamModal} className="flex-1 py-2 bg-slate-700 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold hover:bg-slate-600 transition-colors">
                   Close
                 </button>
@@ -1804,6 +1912,54 @@ const AdminCCTV = () => {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Recording Preview Modal ─────────────────────────────────── */}
+      {recordingPreview?._show && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[200] p-4"
+          onClick={() => { clearInterval(previewIntervalRef.current); setRecordingPreview(p => ({ ...p, _show: false, playing: false })); }}>
+          <div className="bg-slate-900 rounded-2xl border border-slate-700 w-full max-w-xl overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700">
+              <div>
+                <h2 className="text-white font-bold text-sm flex items-center gap-2"><Video size={14} className="text-purple-400" /> Recording Preview</h2>
+                <p className="text-slate-400 text-[10px] mt-0.5">{recordingPreview.frames.length} frames · {recordingPreview.cameraName || 'Unknown camera'}</p>
+              </div>
+              <button onClick={() => { clearInterval(previewIntervalRef.current); setRecordingPreview(p => ({ ...p, _show: false, playing: false })); }}
+                className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-700 transition-all"><X size={15} /></button>
+            </div>
+            <div className="relative bg-black aspect-video flex items-center justify-center">
+              <img
+                src={`data:image/jpeg;base64,${recordingPreview.frames[recordingPreview.previewFrame]?.frame}`}
+                alt={`Frame ${recordingPreview.previewFrame + 1}`}
+                className="max-h-full max-w-full object-contain"
+              />
+              <div className="absolute top-2 right-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-full">
+                {recordingPreview.previewFrame + 1} / {recordingPreview.frames.length}
+              </div>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <input type="range" min={0} max={recordingPreview.frames.length - 1} value={recordingPreview.previewFrame}
+                onChange={e => { clearInterval(previewIntervalRef.current); setRecordingPreview(p => ({ ...p, previewFrame: parseInt(e.target.value), playing: false })); }}
+                className="w-full accent-purple-500 cursor-pointer" />
+              <div className="flex items-center justify-center gap-3">
+                <button onClick={togglePreviewPlay}
+                  className={`px-5 py-1.5 text-xs font-bold rounded-lg transition-all ${ recordingPreview.playing ? 'bg-yellow-600 hover:bg-yellow-500 text-white' : 'bg-purple-600 hover:bg-purple-500 text-white'}`}>
+                  {recordingPreview.playing ? '⏸ Pause' : '▶ Play'}
+                </button>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button onClick={saveRecordingFromPreview}
+                  className="flex-1 py-2 bg-emerald-700 hover:bg-emerald-600 border border-emerald-600 text-white rounded-xl text-xs font-bold transition-all">
+                  ✅ Save Recording
+                </button>
+                <button onClick={() => { clearInterval(previewIntervalRef.current); setRecordingPreview(null); }}
+                  className="flex-1 py-2 bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-300 rounded-xl text-xs font-bold transition-all">
+                  🗑 Discard
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
